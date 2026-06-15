@@ -125,6 +125,7 @@ void Application::drawNodePropertiesPanel()
                 {
                     for (int k = 0; k < static_cast<int>(mats.size()); ++k)
                     {
+                        ImGui::PushID(k);
                         const bool selected = (k == matIdx);
                         if (ImGui::Selectable(matLabel(k).c_str(), selected))
                         {
@@ -135,6 +136,7 @@ void Application::drawNodePropertiesPanel()
                         {
                             ImGui::SetItemDefaultFocus();
                         }
+                        ImGui::PopID();
                     }
                     ImGui::EndCombo();
                 }
@@ -198,6 +200,7 @@ void Application::drawNodePropertiesPanel()
             {
                 for (int k = 0; k < static_cast<int>(mats.size()); ++k)
                 {
+                    ImGui::PushID(k);
                     const bool selected = (k == implNode->materialIndex);
                     if (ImGui::Selectable(matLabel(k).c_str(), selected))
                     {
@@ -206,6 +209,7 @@ void Application::drawNodePropertiesPanel()
                         m_accumDirty = true;
                     }
                     if (selected) { ImGui::SetItemDefaultFocus(); }
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }
