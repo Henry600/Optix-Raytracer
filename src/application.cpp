@@ -634,25 +634,6 @@ void Application::resizeFramebuffer(int w, int h)
     m_vkCtx.createDisplayImage(w, h);
 }
 
-// ─── TLAS rebuild ────────────────────────────────────────────────────────────
-
-void Application::rebuildTlas()
-{
-    if (!m_scene->hasAccel())
-    {
-        return;
-    }
-    try
-    {
-        m_scene->rebuildTlas(m_optixContext);
-    }
-    catch (const std::exception& e)
-    {
-        m_loadError = std::string("TLAS rebuild failed: ") + e.what();
-    }
-    m_accumDirty = true;
-}
-
 void Application::syncFlyCameraFromNode(int nodeIdx)
 {
     if (nodeIdx < 0 || nodeIdx >= static_cast<int>(m_scene->nodes().size()))
@@ -1377,7 +1358,8 @@ bool Application::tick()
                     node.localTransform = newWorldTx;
                 }
 
-                rebuildTlas();
+                m_scene->rebuildTlas(m_optixContext);
+                m_accumDirty = true;
                 syncFlyCameraFromNode(m_selectedNodeIdx);
             }
         }
@@ -2093,7 +2075,8 @@ bool Application::tick()
             {
                 ImGuizmo::RecomposeMatrixFromComponents(translation, rotation, scale, colMajor);
                 node.localTransform = mat4FromColMajor(colMajor);
-                rebuildTlas();
+                m_scene->rebuildTlas(m_optixContext);
+                m_accumDirty = true;
                 syncFlyCameraFromNode(m_selectedNodeIdx);
             }
         }

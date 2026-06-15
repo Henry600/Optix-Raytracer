@@ -269,10 +269,7 @@ void Scene::buildAccel(OptixDeviceContext ctx)
 
 void Scene::rebuildTlas(OptixDeviceContext ctx)
 {
-    if (m_accel && m_accel->valid())
-    {
-        m_accel->rebuildTlas(ctx, *this);
-    }
+    if (m_accel) { m_accel->rebuildTlas(ctx, *this); }
 }
 
 void Scene::destroyAccel()

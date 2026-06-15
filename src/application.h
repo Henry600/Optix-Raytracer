@@ -79,7 +79,6 @@ private:
     void loadEnvMap(const std::string& path);
     void loadTexture(const std::string& path);
     void uploadMaterials();
-    void rebuildTlas();
     // If nodeIdx is a CameraNode, extract its world-space transform into the
     // fly-camera state so the next updateCamera() renders from the new position.
     void syncFlyCameraFromNode(int nodeIdx);
