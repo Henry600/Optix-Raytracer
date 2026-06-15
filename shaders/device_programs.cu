@@ -517,8 +517,17 @@ extern "C" __global__ void __raygen__renderFrame()
     float  bsdfPdfForMis = 0.0f;
 
     // Beer-Lambert absorption coefficient: -log(albedo) per unit distance.
-    // Zero until a transmissive surface is entered; cleared again on exit.
+    // Kept in sync with medAbsorb[medTop]; updated whenever the stack changes.
     float3 absorb = make_float3(0.0f, 0.0f, 0.0f);
+
+    // Nested-dielectric medium stack.
+    // Index 0 = air (always present, never popped).  Push on entry, pop on exit.
+    constexpr int kMaxMediumDepth = 8;
+    float  medIor   [kMaxMediumDepth];
+    float3 medAbsorb[kMaxMediumDepth];
+    int    medTop = 0;
+    medIor[0]    = 1.0f;
+    medAbsorb[0] = make_float3(0.0f, 0.0f, 0.0f);
 
     for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce)
     {
@@ -641,7 +650,7 @@ extern "C" __global__ void __raygen__renderFrame()
 
             // Base Fresnel — exact dielectric (handles IOR=1 correctly) blended with metal Schlick.
             // Schlick with F0=0 gives spurious (1−cosV)^5 at grazing for IOR=1; exact gives 0.
-            const float  fDiel = devFresnelDielectric(cosV, 1.0f / vtx.ior);
+            const float  fDiel = devFresnelDielectric(cosV, medIor[medTop] / vtx.ior);
             const float3 F     = devMix(make_float3(fDiel, fDiel, fDiel),
                                         devFresnel(cosV, vtx.albedo), vtx.metallic);
 
@@ -686,7 +695,7 @@ extern "C" __global__ void __raygen__renderFrame()
                         const float3 H_nee     = devNormalize(V + neeDir);
                         const float  cosH_nee  = fmaxf(0.0f, devDot(H_nee, Nf));
                         const float  cosVH_nee = fmaxf(0.0f, devDot(V, H_nee));
-                        const float  fNEE_diel = devFresnelDielectric(cosVH_nee, 1.0f / vtx.ior);
+                        const float  fNEE_diel = devFresnelDielectric(cosVH_nee, medIor[medTop] / vtx.ior);
                         const float3 F_nee     = devMix(make_float3(fNEE_diel, fNEE_diel, fNEE_diel),
                                                         devFresnel(cosVH_nee, vtx.albedo), vtx.metallic);
                         const float  brdfCosI  = devGGX_BRDFCosI(cosI_nee, cosO, cosH_nee, alpha);
@@ -737,8 +746,10 @@ extern "C" __global__ void __raygen__renderFrame()
             }
             else
             {
-                // Non-specular weight — identical for diffuse and refraction sub-lobes
-                const float3 kNS = (make_float3(1.0f, 1.0f, 1.0f) - F) * vtx.albedo
+                // Non-specular weight — Fresnel transmission factor only.
+                // albedo is applied inside the diffuse branch; the refraction branch
+                // gets its color from Beer-Lambert absorption, not a surface multiply.
+                const float3 kNS = (make_float3(1.0f, 1.0f, 1.0f) - F)
                                    * (1.0f / fmaxf(1e-4f, 1.0f - p_spec));
                 throughput *= kNS;
 
@@ -747,6 +758,8 @@ extern "C" __global__ void __raygen__renderFrame()
                 if (rnd(seed) > p_trans)
                 {
                     // ── 2. Diffuse (Lambertian, cosine-weighted) ───────────────
+                    throughput *= vtx.albedo;
+
                     float3 T, B;
                     buildONB(Nf, T, B);
 
@@ -827,7 +840,9 @@ extern "C" __global__ void __raygen__renderFrame()
                 // entering/exiting test, not for the microfacet direction.
                 const bool   entering = (devDot(rayDir, vtx.N) < 0.0f);
                 const float3 faceN    = entering ? vtx.N : -vtx.N;
-                const float  eta      = entering ? (1.0f / vtx.ior) : vtx.ior;
+                const float  eta      = entering
+                                      ? (medIor[medTop] / vtx.ior)
+                                      : (vtx.ior / medIor[medTop > 0 ? medTop - 1 : 0]);
 
                 // ── Volumetric scattering ─────────────────────────────────────────
                 // Per-channel delta tracking: sample the collision event at σ_max
@@ -891,27 +906,33 @@ extern "C" __global__ void __raygen__renderFrame()
                     throughput *= devSmithG1(cosT, alpha);
                 }
 
-                // Update Beer-Lambert absorption state.
-                // On true refraction: entering glass starts absorbing, exiting stops.
-                // On TIR: stay in the same medium — absorb is unchanged.
+                // Update medium stack and Beer-Lambert absorption.
+                // Push on entry, pop on exit; absorb is always medAbsorb[medTop] after.
+                // On TIR the stack is unchanged — ray stays in the same medium.
                 if (refracted)
                 {
                     if (entering)
                     {
-                        // Total extinction σ_t = σ_absorption + σ_scattering per channel.
-                        // Scattering removes photons from the direct beam just like absorption;
-                        // including it here makes the transmitted beam yellow when blue
-                        // scatters more (Rayleigh).  The scatter event code undoes the excess
-                        // σ_t beyond the actual scatter point, keeping the estimator correct.
-                        const float invDist = 1.0f / vtx.absorptionDistance;
-                        absorb.x = -logf(fmaxf(vtx.albedo.x, 1e-6f)) * invDist + vtx.scatteringCoeff.x;
-                        absorb.y = -logf(fmaxf(vtx.albedo.y, 1e-6f)) * invDist + vtx.scatteringCoeff.y;
-                        absorb.z = -logf(fmaxf(vtx.albedo.z, 1e-6f)) * invDist + vtx.scatteringCoeff.z;
+                        if (medTop + 1 < kMaxMediumDepth)
+                        {
+                            ++medTop;
+                            medIor[medTop] = vtx.ior;
+                            // Total extinction σ_t = σ_absorption + σ_scattering per channel.
+                            // Scattering removes photons from the direct beam just like absorption;
+                            // including it here makes the transmitted beam yellow when blue
+                            // scatters more (Rayleigh).  The scatter event code undoes the excess
+                            // σ_t beyond the actual scatter point, keeping the estimator correct.
+                            const float invDist = 1.0f / vtx.absorptionDistance;
+                            medAbsorb[medTop].x = -logf(fmaxf(vtx.albedo.x, 1e-6f)) * invDist + vtx.scatteringCoeff.x;
+                            medAbsorb[medTop].y = -logf(fmaxf(vtx.albedo.y, 1e-6f)) * invDist + vtx.scatteringCoeff.y;
+                            medAbsorb[medTop].z = -logf(fmaxf(vtx.albedo.z, 1e-6f)) * invDist + vtx.scatteringCoeff.z;
+                        }
                     }
                     else
                     {
-                        absorb = make_float3(0.0f, 0.0f, 0.0f);
+                        if (medTop > 0) { --medTop; }
                     }
+                    absorb = medAbsorb[medTop];
                 }
 
                 // On TIR devRefract writes the reflected direction; offset stays on
