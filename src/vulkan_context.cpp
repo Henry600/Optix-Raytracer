@@ -220,12 +220,20 @@ void VulkanContext::cleanup()
     destroyDisplayImage();
     destroyUiPipeline(false);
 
-    if (m_imguiDescPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, m_imguiDescPool,  nullptr); m_imguiDescPool = VK_NULL_HANDLE; }
-    if (m_fence         != VK_NULL_HANDLE) { vkDestroyFence(m_device,          m_fence,          nullptr); m_fence         = VK_NULL_HANDLE; }
-    if (m_renderDone    != VK_NULL_HANDLE) { vkDestroySemaphore(m_device,      m_renderDone,     nullptr); m_renderDone    = VK_NULL_HANDLE; }
-    if (m_imageReady    != VK_NULL_HANDLE) { vkDestroySemaphore(m_device,      m_imageReady,     nullptr); m_imageReady    = VK_NULL_HANDLE; }
-    if (m_cmdPool       != VK_NULL_HANDLE) { vkDestroyCommandPool(m_device,    m_cmdPool,        nullptr); m_cmdPool       = VK_NULL_HANDLE; }
-    if (m_renderPass    != VK_NULL_HANDLE) { vkDestroyRenderPass(m_device,     m_renderPass,     nullptr); m_renderPass    = VK_NULL_HANDLE; }
+    if (m_imguiDescPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, m_imguiDescPool, nullptr); m_imguiDescPool = VK_NULL_HANDLE; }
+    if (m_fence         != VK_NULL_HANDLE) { vkDestroyFence(m_device,          m_fence,         nullptr); m_fence         = VK_NULL_HANDLE; }
+    for (VkSemaphore& sem : m_renderDoneSems)
+    {
+        if (sem != VK_NULL_HANDLE)
+        {
+            vkDestroySemaphore(m_device, sem, nullptr);
+            sem = VK_NULL_HANDLE;
+        }
+    }
+    m_renderDoneSems.clear();
+    if (m_imageReady    != VK_NULL_HANDLE) { vkDestroySemaphore(m_device,   m_imageReady, nullptr); m_imageReady = VK_NULL_HANDLE; }
+    if (m_cmdPool       != VK_NULL_HANDLE) { vkDestroyCommandPool(m_device, m_cmdPool,    nullptr); m_cmdPool    = VK_NULL_HANDLE; }
+    if (m_renderPass    != VK_NULL_HANDLE) { vkDestroyRenderPass(m_device,  m_renderPass, nullptr); m_renderPass = VK_NULL_HANDLE; }
 
     destroySwapchain();
 
@@ -517,7 +525,6 @@ void VulkanContext::createSwapchain(int w, int h)
         VkSemaphoreCreateInfo semCI = {};
         semCI.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         vkCreateSemaphore(m_device, &semCI, nullptr, &m_imageReady);
-        vkCreateSemaphore(m_device, &semCI, nullptr, &m_renderDone);
 
         VkFenceCreateInfo fenceCI = {};
         fenceCI.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -525,16 +532,47 @@ void VulkanContext::createSwapchain(int w, int h)
         vkCreateFence(m_device, &fenceCI, nullptr, &m_fence);
     }
 
-    // ImGui descriptor pool (created once)
+    // Per-image render-done semaphores — recreated whenever the swapchain image
+    // count changes (resize may produce a different count).  Each semaphore is
+    // only reused when its image is re-acquired, so the swapchain has released
+    // any internal reference to the previous present operation by then.
+    if (m_renderDoneSems.size() != actualCount)
+    {
+        for (VkSemaphore& sem : m_renderDoneSems)
+        {
+            if (sem != VK_NULL_HANDLE)
+            {
+                vkDestroySemaphore(m_device, sem, nullptr);
+                sem = VK_NULL_HANDLE;
+            }
+        }
+        m_renderDoneSems.clear();
+
+        VkSemaphoreCreateInfo semCI = {};
+        semCI.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        m_renderDoneSems.resize(actualCount, VK_NULL_HANDLE);
+        for (VkSemaphore& sem : m_renderDoneSems)
+        {
+            vkCreateSemaphore(m_device, &semCI, nullptr, &sem);
+        }
+    }
+
+    // ImGui descriptor pool (created once).
+    // Includes SAMPLED_IMAGE + SAMPLER in addition to COMBINED_IMAGE_SAMPLER because
+    // the ImGui Vulkan backend (1.91+) uses separate image/sampler descriptors.
     if (m_imguiDescPool == VK_NULL_HANDLE)
     {
-        VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 };
+        const VkDescriptorPoolSize poolSizes[] = {
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          1000 },
+            { VK_DESCRIPTOR_TYPE_SAMPLER,                1000 },
+        };
         VkDescriptorPoolCreateInfo descPoolCI = {};
         descPoolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         descPoolCI.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        descPoolCI.maxSets       = 1000;
-        descPoolCI.poolSizeCount = 1;
-        descPoolCI.pPoolSizes    = &poolSize;
+        descPoolCI.maxSets       = 3000;
+        descPoolCI.poolSizeCount = 3;
+        descPoolCI.pPoolSizes    = poolSizes;
         vkCreateDescriptorPool(m_device, &descPoolCI, nullptr, &m_imguiDescPool);
     }
 
@@ -1037,6 +1075,8 @@ void VulkanContext::endFrameAndPresent(VulkanFrameContext& frame, int /*windowW*
     vkCmdEndRenderPass(frame.cmd);
     vkEndCommandBuffer(frame.cmd);
 
+    VkSemaphore renderDone = m_renderDoneSems[frame.imageIndex];
+
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si                = {};
     si.sType                       = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1046,13 +1086,13 @@ void VulkanContext::endFrameAndPresent(VulkanFrameContext& frame, int /*windowW*
     si.commandBufferCount          = 1;
     si.pCommandBuffers             = &frame.cmd;
     si.signalSemaphoreCount        = 1;
-    si.pSignalSemaphores           = &m_renderDone;
+    si.pSignalSemaphores           = &renderDone;
     vkQueueSubmit(m_queue, 1, &si, m_fence);
 
     VkPresentInfoKHR pi   = {};
     pi.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores    = &m_renderDone;
+    pi.pWaitSemaphores    = &renderDone;
     pi.swapchainCount     = 1;
     pi.pSwapchains        = &m_swapchain;
     pi.pImageIndices      = &frame.imageIndex;

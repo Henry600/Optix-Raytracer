@@ -174,9 +174,9 @@ private:
     // ── Commands + sync ───────────────────────────────────────────────────────
     VkCommandPool             m_cmdPool      = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_cmdBuffers;
-    VkSemaphore               m_imageReady   = VK_NULL_HANDLE;
-    VkSemaphore               m_renderDone   = VK_NULL_HANDLE;
-    VkFence                   m_fence        = VK_NULL_HANDLE;
+    VkSemaphore               m_imageReady     = VK_NULL_HANDLE;
+    std::vector<VkSemaphore>  m_renderDoneSems;  // one per swapchain image
+    VkFence                   m_fence          = VK_NULL_HANDLE;
 
     // ── ImGui descriptor pool ─────────────────────────────────────────────────
     VkDescriptorPool          m_imguiDescPool = VK_NULL_HANDLE;
