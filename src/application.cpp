@@ -4,6 +4,7 @@
 // translation unit. This file is that unit — do not include it elsewhere.
 
 #include "application.h"
+#include "implicit_node.h"
 
 #include <optix_function_table_definition.h>
 
@@ -98,12 +99,13 @@ Application::~Application()
         m_denoiser = nullptr;
     }
 
-    if (m_pipeline)     { optixPipelineDestroy(m_pipeline);          m_pipeline      = nullptr; }
-    if (m_pgHitgroup)   { optixProgramGroupDestroy(m_pgHitgroup);    m_pgHitgroup    = nullptr; }
-    if (m_pgMissShadow) { optixProgramGroupDestroy(m_pgMissShadow);  m_pgMissShadow  = nullptr; }
-    if (m_pgMiss)       { optixProgramGroupDestroy(m_pgMiss);        m_pgMiss        = nullptr; }
-    if (m_pgRaygen)     { optixProgramGroupDestroy(m_pgRaygen);      m_pgRaygen      = nullptr; }
-    if (m_module)       { optixModuleDestroy(m_module);              m_module        = nullptr; }
+    if (m_pipeline)              { optixPipelineDestroy(m_pipeline);                    m_pipeline              = nullptr; }
+    if (m_pgHitgroupImplicit)    { optixProgramGroupDestroy(m_pgHitgroupImplicit);      m_pgHitgroupImplicit    = nullptr; }
+    if (m_pgHitgroup)            { optixProgramGroupDestroy(m_pgHitgroup);              m_pgHitgroup            = nullptr; }
+    if (m_pgMissShadow)          { optixProgramGroupDestroy(m_pgMissShadow);            m_pgMissShadow          = nullptr; }
+    if (m_pgMiss)                { optixProgramGroupDestroy(m_pgMiss);                  m_pgMiss                = nullptr; }
+    if (m_pgRaygen)              { optixProgramGroupDestroy(m_pgRaygen);                m_pgRaygen              = nullptr; }
+    if (m_module)                { optixModuleDestroy(m_module);                        m_module                = nullptr; }
 
     if (m_optixContext)
     {
@@ -268,8 +270,11 @@ struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) MissRecord
 
 struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupRecord
 {
-    char     header[OPTIX_SBT_RECORD_HEADER_SIZE];
-    MeshData data;   // device pointers to this mesh's geometry
+    char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+    union {
+        MeshData          mesh;      // used when packed with m_pgHitgroup
+        ImplicitShapeData implicit;  // used when packed with m_pgHitgroupImplicit
+    } data;
 };
 
 } // anonymous namespace
@@ -303,10 +308,11 @@ void Application::buildPipeline(const std::string& ptxDir)
     pipelineOpts.traversableGraphFlags            = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING;
     pipelineOpts.numPayloadValues                 = 4;  // radiance: p0/p1 = packed PathVertex ptr
                                                         // shadow: p0=vis, p1/p2/p3=RGB filter
-    pipelineOpts.numAttributeValues               = 2;  // barycentrics (built-in triangle)
+    pipelineOpts.numAttributeValues               = 3;  // barycentrics for triangles; float3 normal for custom primitives
     pipelineOpts.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
     pipelineOpts.pipelineLaunchParamsVariableName = "optixLaunchParams";
-    pipelineOpts.usesPrimitiveTypeFlags           = static_cast<unsigned int>(OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE);
+    pipelineOpts.usesPrimitiveTypeFlags           = static_cast<unsigned int>(
+        OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE | OPTIX_PRIMITIVE_TYPE_FLAGS_CUSTOM);
 
     OPTIX_CHECK(optixModuleCreate(
         m_optixContext,
@@ -350,8 +356,20 @@ void Application::buildPipeline(const std::string& ptxDir)
     pgDesc.hitgroup.entryFunctionNameIS = nullptr;
     OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgHitgroup));
 
+    pgDesc                              = {};
+    pgDesc.kind                         = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    pgDesc.hitgroup.moduleCH            = m_module;
+    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__implicit";
+    pgDesc.hitgroup.moduleAH            = m_module;
+    pgDesc.hitgroup.entryFunctionNameAH = "__anyhit__implicit";
+    pgDesc.hitgroup.moduleIS            = m_module;
+    pgDesc.hitgroup.entryFunctionNameIS = "__intersection__implicit";
+    OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgHitgroupImplicit));
+
     // ── Pipeline ──────────────────────────────────────────────────────────────
-    const OptixProgramGroup pgs[] = {m_pgRaygen, m_pgMiss, m_pgMissShadow, m_pgHitgroup };
+    const OptixProgramGroup pgs[] = {
+        m_pgRaygen, m_pgMiss, m_pgMissShadow, m_pgHitgroup, m_pgHitgroupImplicit
+    };
 
     OptixPipelineLinkOptions linkOpts = {};
     // Depth 1: path rays and NEE shadow rays are both called from raygen —
@@ -361,7 +379,7 @@ void Application::buildPipeline(const std::string& ptxDir)
     OPTIX_CHECK(optixPipelineCreate(
         m_optixContext,
         &pipelineOpts, &linkOpts,
-        pgs, 4,
+        pgs, 5,
         nullptr, nullptr,
         &m_pipeline));
 
@@ -378,19 +396,21 @@ void Application::reloadPipeline()
 
     // Save the current handles — we restore them if the new PTX fails to compile,
     // which keeps the last working shader running instead of going black.
-    const OptixModule       oldModule        = m_module;
-    const OptixProgramGroup oldPgRaygen      = m_pgRaygen;
-    const OptixProgramGroup oldPgMiss        = m_pgMiss;
-    const OptixProgramGroup oldPgMissShadow  = m_pgMissShadow;
-    const OptixProgramGroup oldPgHitgroup    = m_pgHitgroup;
-    const OptixPipeline     oldPipeline      = m_pipeline;
+    const OptixModule       oldModule               = m_module;
+    const OptixProgramGroup oldPgRaygen             = m_pgRaygen;
+    const OptixProgramGroup oldPgMiss               = m_pgMiss;
+    const OptixProgramGroup oldPgMissShadow         = m_pgMissShadow;
+    const OptixProgramGroup oldPgHitgroup           = m_pgHitgroup;
+    const OptixProgramGroup oldPgHitgroupImplicit   = m_pgHitgroupImplicit;
+    const OptixPipeline     oldPipeline             = m_pipeline;
 
-    m_module        = nullptr;
-    m_pgRaygen      = nullptr;
-    m_pgMiss        = nullptr;
-    m_pgMissShadow  = nullptr;
-    m_pgHitgroup    = nullptr;
-    m_pipeline      = nullptr;
+    m_module               = nullptr;
+    m_pgRaygen             = nullptr;
+    m_pgMiss               = nullptr;
+    m_pgMissShadow         = nullptr;
+    m_pgHitgroup           = nullptr;
+    m_pgHitgroupImplicit   = nullptr;
+    m_pipeline             = nullptr;
 
     try
     {
@@ -398,31 +418,34 @@ void Application::reloadPipeline()
     }
     catch (...)
     {
-        if (m_pipeline)      { optixPipelineDestroy(m_pipeline);         m_pipeline     = nullptr; }
-        if (m_pgHitgroup)    { optixProgramGroupDestroy(m_pgHitgroup);   m_pgHitgroup   = nullptr; }
-        if (m_pgMissShadow)  { optixProgramGroupDestroy(m_pgMissShadow); m_pgMissShadow = nullptr; }
-        if (m_pgMiss)        { optixProgramGroupDestroy(m_pgMiss);       m_pgMiss       = nullptr; }
-        if (m_pgRaygen)      { optixProgramGroupDestroy(m_pgRaygen);     m_pgRaygen     = nullptr; }
-        if (m_module)        { optixModuleDestroy(m_module);             m_module       = nullptr; }
+        if (m_pipeline)              { optixPipelineDestroy(m_pipeline);                  m_pipeline              = nullptr; }
+        if (m_pgHitgroupImplicit)    { optixProgramGroupDestroy(m_pgHitgroupImplicit);    m_pgHitgroupImplicit    = nullptr; }
+        if (m_pgHitgroup)            { optixProgramGroupDestroy(m_pgHitgroup);            m_pgHitgroup            = nullptr; }
+        if (m_pgMissShadow)          { optixProgramGroupDestroy(m_pgMissShadow);          m_pgMissShadow          = nullptr; }
+        if (m_pgMiss)                { optixProgramGroupDestroy(m_pgMiss);                m_pgMiss                = nullptr; }
+        if (m_pgRaygen)              { optixProgramGroupDestroy(m_pgRaygen);              m_pgRaygen              = nullptr; }
+        if (m_module)                { optixModuleDestroy(m_module);                      m_module                = nullptr; }
 
-        m_module        = oldModule;
-        m_pgRaygen      = oldPgRaygen;
-        m_pgMiss        = oldPgMiss;
-        m_pgMissShadow  = oldPgMissShadow;
-        m_pgHitgroup    = oldPgHitgroup;
-        m_pipeline      = oldPipeline;
+        m_module               = oldModule;
+        m_pgRaygen             = oldPgRaygen;
+        m_pgMiss               = oldPgMiss;
+        m_pgMissShadow         = oldPgMissShadow;
+        m_pgHitgroup           = oldPgHitgroup;
+        m_pgHitgroupImplicit   = oldPgHitgroupImplicit;
+        m_pipeline             = oldPipeline;
         throw;
     }
 
     buildSbt();
     m_accumDirty = true;  // new shader = new result; clear accumulation
 
-    if (oldPipeline)      { optixPipelineDestroy(oldPipeline);          }
-    if (oldPgHitgroup)    { optixProgramGroupDestroy(oldPgHitgroup);    }
-    if (oldPgMissShadow)  { optixProgramGroupDestroy(oldPgMissShadow);  }
-    if (oldPgMiss)        { optixProgramGroupDestroy(oldPgMiss);        }
-    if (oldPgRaygen)      { optixProgramGroupDestroy(oldPgRaygen);      }
-    if (oldModule)        { optixModuleDestroy(oldModule);              }
+    if (oldPipeline)              { optixPipelineDestroy(oldPipeline);                }
+    if (oldPgHitgroupImplicit)    { optixProgramGroupDestroy(oldPgHitgroupImplicit);  }
+    if (oldPgHitgroup)            { optixProgramGroupDestroy(oldPgHitgroup);          }
+    if (oldPgMissShadow)          { optixProgramGroupDestroy(oldPgMissShadow);        }
+    if (oldPgMiss)                { optixProgramGroupDestroy(oldPgMiss);              }
+    if (oldPgRaygen)              { optixProgramGroupDestroy(oldPgRaygen);            }
+    if (oldModule)                { optixModuleDestroy(oldModule);                    }
 }
 
 void Application::checkShaderHotReload()
@@ -473,12 +496,18 @@ void Application::buildSbt()
     m_sbtMissBuffer.allocAndUpload(missRecs, sizeof(missRecs));
 
     // ── Hit group records — one per TLAS instance ────────────────────────────
-    // Walk the node tree in the same DFS order as buildTlasPhase so that
+    // Walk the node tree in the same DFS order as Accel::buildTlasPhase so that
     // TLAS instance i and SBT record i always correspond.
     const auto& meshes   = m_scene->meshes();
     const auto& allNodes = m_scene->nodes();
 
-    struct InstRecord { int meshIdx; int materialIdx; };
+    struct InstRecord
+    {
+        bool         isImplicit;
+        int          meshIdx;      // valid when !isImplicit
+        int          materialIdx;
+        ImplicitType implicitType; // valid when isImplicit
+    };
     std::vector<InstRecord> instList;
 
     std::function<void(int)> walk = [&](int nodeIdx)
@@ -494,9 +523,13 @@ void Application::buildSbt()
                     const int matIdx = (j < static_cast<int>(mn->materialIndices.size()))
                         ? mn->materialIndices[j]
                         : meshes[mi].materialIndex;
-                    instList.push_back({mi, matIdx});
+                    instList.push_back({false, mi, matIdx, ImplicitType::Sphere});
                 }
             }
+        }
+        else if (const ImplicitNode* in = dynamic_cast<const ImplicitNode*>(&node))
+        {
+            instList.push_back({true, 0, in->materialIndex, in->type});
         }
         for (int childIdx : node.children)
         {
@@ -513,16 +546,25 @@ void Application::buildSbt()
 
     for (size_t i = 0; i < instList.size(); ++i)
     {
-        OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroup, &hitRecs[i]));
-
-        if (m_scene->hasAccel())
+        const InstRecord& rec = instList[i];
+        if (rec.isImplicit)
         {
-            const auto ptrs               = m_scene->meshDevicePtrs(instList[i].meshIdx);
-            hitRecs[i].data.positions     = reinterpret_cast<const float3*>(ptrs.positions);
-            hitRecs[i].data.normals       = reinterpret_cast<const float3*>(ptrs.normals);
-            hitRecs[i].data.indices       = reinterpret_cast<const uint3*>(ptrs.indices);
-            hitRecs[i].data.uvs           = reinterpret_cast<const float2*>(ptrs.uvs);
-            hitRecs[i].data.materialIndex = instList[i].materialIdx;
+            OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroupImplicit, &hitRecs[i]));
+            hitRecs[i].data.implicit.type          = static_cast<unsigned int>(rec.implicitType);
+            hitRecs[i].data.implicit.materialIndex = rec.materialIdx;
+        }
+        else
+        {
+            OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroup, &hitRecs[i]));
+            if (m_scene->hasAccel())
+            {
+                const auto ptrs                    = m_scene->meshDevicePtrs(rec.meshIdx);
+                hitRecs[i].data.mesh.positions     = reinterpret_cast<const float3*>(ptrs.positions);
+                hitRecs[i].data.mesh.normals       = reinterpret_cast<const float3*>(ptrs.normals);
+                hitRecs[i].data.mesh.indices       = reinterpret_cast<const uint3*>(ptrs.indices);
+                hitRecs[i].data.mesh.uvs           = reinterpret_cast<const float2*>(ptrs.uvs);
+                hitRecs[i].data.mesh.materialIndex = rec.materialIdx;
+            }
         }
     }
 
@@ -1906,6 +1948,42 @@ bool Application::tick()
     // ── Scene Graph panel ─────────────────────────────────────────────────────
     ImGui::Begin("Scene Graph");
 
+    // ── Add Implicit Shape button ─────────────────────────────────────────────
+    if (ImGui::Button("Add Implicit Shape"))
+    {
+        ImGui::OpenPopup("add_implicit_popup");
+    }
+    if (ImGui::BeginPopup("add_implicit_popup"))
+    {
+        const char* shapeNames[] = { "Sphere", "Box", "Cylinder" };
+        for (int k = 0; k < 3; ++k)
+        {
+            if (ImGui::MenuItem(shapeNames[k]))
+            {
+                auto implNode           = std::make_unique<ImplicitNode>();
+                implNode->name          = shapeNames[k];
+                implNode->type          = static_cast<ImplicitType>(k);
+                implNode->materialIndex = 0;
+                implNode->localTransform = mat4Identity();
+                const int idx = m_scene->addNode(std::move(implNode));
+                m_scene->addRootNode(idx);
+                try
+                {
+                    m_scene->buildAccel(m_optixContext);
+                }
+                catch (const std::exception& e)
+                {
+                    m_loadError = std::string("AS build failed: ") + e.what();
+                }
+                buildSbt();
+                m_selectedNodeIdx = idx;
+                m_accumDirty      = true;
+            }
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::Separator();
+
     if (m_scene->rootNodes().empty())
     {
         ImGui::TextDisabled("No scene loaded");
@@ -2082,6 +2160,68 @@ bool Application::tick()
             {
                 buildSbt();
                 m_accumDirty = true;
+            }
+        }
+        else if (ImplicitNode* implNode = dynamic_cast<ImplicitNode*>(&node))
+        {
+            ImGui::Separator();
+
+            static const char* kTypeNames[] = { "Sphere", "Box", "Cylinder" };
+            int typeIdx = static_cast<int>(implNode->type);
+            ImGui::Text("Shape:");
+            ImGui::SameLine();
+            bool typeChanged = false;
+            for (int k = 0; k < 3; ++k)
+            {
+                if (k > 0) { ImGui::SameLine(); }
+                if (ImGui::RadioButton(kTypeNames[k], typeIdx == k))
+                {
+                    typeIdx = k;
+                    typeChanged = true;
+                }
+            }
+            if (typeChanged)
+            {
+                implNode->type = static_cast<ImplicitType>(typeIdx);
+                try
+                {
+                    m_scene->buildAccel(m_optixContext);
+                }
+                catch (const std::exception& e)
+                {
+                    m_loadError = std::string("AS rebuild failed: ") + e.what();
+                }
+                buildSbt();
+                m_accumDirty = true;
+            }
+
+            ImGui::Separator();
+
+            auto& mats = m_scene->materials();
+            const auto matLabel = [&](int idx) -> std::string
+            {
+                const std::string& n = m_scene->materialName(idx);
+                return n.empty() ? ("Material " + std::to_string(idx)) : n;
+            };
+
+            const std::string preview = (implNode->materialIndex >= 0
+                && implNode->materialIndex < static_cast<int>(mats.size()))
+                ? matLabel(implNode->materialIndex) : "(none)";
+
+            if (ImGui::BeginCombo("Material##impl", preview.c_str()))
+            {
+                for (int k = 0; k < static_cast<int>(mats.size()); ++k)
+                {
+                    const bool selected = (k == implNode->materialIndex);
+                    if (ImGui::Selectable(matLabel(k).c_str(), selected))
+                    {
+                        implNode->materialIndex = k;
+                        buildSbt();
+                        m_accumDirty = true;
+                    }
+                    if (selected) { ImGui::SetItemDefaultFocus(); }
+                }
+                ImGui::EndCombo();
             }
         }
         else if (dynamic_cast<CameraNode*>(&node))

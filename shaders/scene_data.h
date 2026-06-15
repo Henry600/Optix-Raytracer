@@ -45,4 +45,21 @@ struct MaterialData
     int    thinWalled = 0;  // 1 = invisible to NEE shadow rays (pass-through)
 };
 
+// Device-side mirror of ImplicitType from implicit_node.h.
+// Plain C-style enum for CUDA device code compatibility.
+enum ImplicitTypeGPU : unsigned int
+{
+    IMPLICIT_SPHERE   = 0,
+    IMPLICIT_BOX      = 1,
+    IMPLICIT_CYLINDER = 2,
+};
+
+// SBT data for one implicit shape instance.
+// Read by __intersection__implicit, __anyhit__implicit, __closesthit__implicit.
+struct ImplicitShapeData
+{
+    unsigned int type;          // ImplicitTypeGPU value
+    int          materialIndex; // into the per-launch MaterialData array
+};
+
 #endif // OPTIX_RAYTRACER_SCENE_DATA_H

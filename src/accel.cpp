@@ -5,6 +5,7 @@
 // output buffer are kept alive in MeshBuffers / m_tlasOutputBuffer so OptiX
 // can continue to traverse them during rendering.
 #include "accel.h"
+#include "implicit_node.h"
 #include "matrix4x4.h"
 #include "node_3d.h"
 #include "scene.h"
@@ -48,6 +49,9 @@ void Accel::destroy()
     m_tlasOutputBuffer.free();
     m_instanceBuffer.free();
     m_tlas = 0;
+    m_implicitAabbBuf.free();
+    m_implicitOutputAS.free();
+    m_implicitBlas = 0;
 }
 
 // ─── Accel::buildBlas ─────────────────────────────────────────────────────────
@@ -135,6 +139,51 @@ void Accel::buildBlas(
     // tempBuffer and compactedSizeSlot freed automatically at end of scope
 }
 
+// ─── Accel::buildImplicitBlas ─────────────────────────────────────────────────
+
+void Accel::buildImplicitBlas(OptixDeviceContext ctx)
+{
+    // All canonical implicit shapes (Sphere, Box, Cylinder) fit within [-1,1]^3
+    // in local space.  One shared BLAS covers every shape type; the intersection
+    // program reads the actual type from the per-instance SBT record.
+    const OptixAabb aabb = { -1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f };
+    m_implicitAabbBuf.allocAndUpload(&aabb, sizeof(OptixAabb));
+
+    const uint32_t    buildFlags[] = { OPTIX_GEOMETRY_FLAG_NONE };
+    const CUdeviceptr aabbPtr      = m_implicitAabbBuf.ptr();
+
+    OptixBuildInput buildInput = {};
+    buildInput.type            = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
+    auto& cp                   = buildInput.customPrimitiveArray;
+    cp.aabbBuffers             = &aabbPtr;
+    cp.numPrimitives           = 1;
+    cp.strideInBytes           = sizeof(OptixAabb);
+    cp.flags                   = buildFlags;
+    cp.numSbtRecords           = 1;
+    cp.sbtIndexOffsetBuffer    = 0;
+
+    OptixAccelBuildOptions opts = {};
+    opts.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    opts.operation  = OPTIX_BUILD_OPERATION_BUILD;
+
+    OptixAccelBufferSizes sizes = {};
+    OPTIX_CHECK(optixAccelComputeMemoryUsage(ctx, &opts, &buildInput, 1, &sizes));
+
+    GPUBuffer tempBuf;
+    tempBuf.alloc(sizes.tempSizeInBytes);
+    m_implicitOutputAS.alloc(sizes.outputSizeInBytes);
+
+    OPTIX_CHECK(optixAccelBuild(
+        ctx, nullptr,
+        &opts, &buildInput, 1,
+        tempBuf.ptr(),            tempBuf.size(),
+        m_implicitOutputAS.ptr(), m_implicitOutputAS.size(),
+        &m_implicitBlas,
+        nullptr, 0));
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
 // ─── Accel::build ─────────────────────────────────────────────────────────────
 
 void Accel::build(OptixDeviceContext ctx, const Scene& scene)
@@ -142,37 +191,49 @@ void Accel::build(OptixDeviceContext ctx, const Scene& scene)
     destroy();
 
     const auto& meshes = scene.meshes();
-    if (meshes.empty())
-    {
-        return;
-    }
-
-    m_meshBuffers.resize(meshes.size());
 
     // ── BLAS per mesh ─────────────────────────────────────────────────────────
-    for (size_t i = 0; i < meshes.size(); ++i)
+    if (!meshes.empty())
     {
-        const Mesh& mesh = meshes[i];
-        MeshBuffers& mb  = m_meshBuffers[i];
+        m_meshBuffers.resize(meshes.size());
 
-        // Upload vertex attributes to device
-        mb.positions.allocAndUpload(mesh.positions.data(), mesh.positions.size() * sizeof(float3));
-
-        if (!mesh.normals.empty())
+        for (size_t i = 0; i < meshes.size(); ++i)
         {
-            mb.normals.allocAndUpload(mesh.normals.data(), mesh.normals.size() * sizeof(float3));
-        }
+            const Mesh& mesh = meshes[i];
+            MeshBuffers& mb  = m_meshBuffers[i];
 
-        if (!mesh.uvs.empty())
+            mb.positions.allocAndUpload(mesh.positions.data(), mesh.positions.size() * sizeof(float3));
+
+            if (!mesh.normals.empty())
+            {
+                mb.normals.allocAndUpload(mesh.normals.data(), mesh.normals.size() * sizeof(float3));
+            }
+
+            if (!mesh.uvs.empty())
+            {
+                mb.uvs.allocAndUpload(mesh.uvs.data(), mesh.uvs.size() * sizeof(float2));
+            }
+
+            mb.indices.allocAndUpload(mesh.indices.data(), mesh.indices.size() * sizeof(uint3));
+
+            buildBlas(ctx, mb,
+                      static_cast<unsigned int>(mesh.positions.size()),
+                      static_cast<unsigned int>(mesh.indices.size()));
+        }
+    }
+
+    // ── Shared implicit BLAS (built if any ImplicitNode exists in scene) ──────
+    {
+        bool hasImplicits = false;
+        std::function<void(int)> scan = [&](int idx)
         {
-            mb.uvs.allocAndUpload(mesh.uvs.data(), mesh.uvs.size() * sizeof(float2));
-        }
+            const Node3D& n = *scene.nodes()[idx];
+            if (dynamic_cast<const ImplicitNode*>(&n)) { hasImplicits = true; }
+            for (int c : n.children) { scan(c); }
+        };
+        for (int r : scene.rootNodes()) { scan(r); }
 
-        mb.indices.allocAndUpload(mesh.indices.data(), mesh.indices.size() * sizeof(uint3));
-
-        buildBlas(ctx, mb,
-                  static_cast<unsigned int>(mesh.positions.size()),
-                  static_cast<unsigned int>(mesh.indices.size()));
+        if (hasImplicits) { buildImplicitBlas(ctx); }
     }
 
     buildTlasPhase(ctx, scene);
@@ -182,112 +243,96 @@ void Accel::build(OptixDeviceContext ctx, const Scene& scene)
 
 void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
 {
-    // Free any existing TLAS resources — GPUBuffer::alloc() calls free() internally,
-    // but we zero m_tlas here so the traversable is not used while we rebuild.
+    // Zero m_tlas so the old handle is not used while we rebuild.
     m_tlas = 0;
 
-    const auto& meshes = scene.meshes();
-    if (meshes.empty())
+    const auto& meshes   = scene.meshes();
+    const auto& allNodes = scene.nodes();
+
+    // ── DFS walk: collect one OptixInstance per mesh-primitive and per implicit ─
+    // The walk order must match buildSbt() exactly so that TLAS instance i and
+    // SBT record i always correspond.
+    std::vector<OptixInstance> instances;
+
+    auto setTransform = [](OptixInstance& inst, const Matrix4x4& w)
     {
-        return;
-    }
-
-    // ── World-space transforms from node hierarchy ────────────────────────────
-    // Walk the Node3D tree and collect one record per MeshNode mesh reference.
-    // Multiple nodes referencing the same mesh each produce their own TLAS
-    // instance, so duplicated nodes render independently with independent materials.
-    struct MeshInst
-    {
-        int       meshIdx;
-        int       materialIdx;
-        Matrix4x4 world;
-    };
-    std::vector<MeshInst> meshInstances;
-
-    if (!scene.rootNodes().empty())
-    {
-        std::function<void(int, const Matrix4x4&)> walkNode =
-            [&](int nodeIdx, const Matrix4x4& parentWorld)
-        {
-            const Node3D& node    = *scene.nodes()[nodeIdx];
-            const Matrix4x4 world = mat4Multiply(parentWorld, node.localTransform);
-
-            if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
-            {
-                for (int j = 0; j < static_cast<int>(mn->meshIndices.size()); ++j)
-                {
-                    const int mi = mn->meshIndices[j];
-                    if (mi >= 0 && mi < static_cast<int>(meshes.size()))
-                    {
-                        const int matIdx = (j < static_cast<int>(mn->materialIndices.size()))
-                            ? mn->materialIndices[j]
-                            : meshes[mi].materialIndex;
-                        meshInstances.push_back({mi, matIdx, world});
-                    }
-                }
-            }
-
-            for (int childIdx : node.children)
-            {
-                walkNode(childIdx, world);
-            }
-        };
-
-        const Matrix4x4 identity = mat4Identity();
-        for (int rootIdx : scene.rootNodes())
-        {
-            walkNode(rootIdx, identity);
-        }
-    }
-
-    if (meshInstances.empty())
-    {
-        return;
-    }
-
-    // ── TLAS — one instance per MeshNode mesh reference ───────────────────────
-    // sbtOffset = flat instance index i, matching the per-instance SBT records
-    // built by buildSbt() using the same node-tree walk order.
-    std::vector<OptixInstance> instances(meshInstances.size());
-
-    for (size_t i = 0; i < meshInstances.size(); ++i)
-    {
-        const MeshInst&  inst_data = meshInstances[i];
-        const Matrix4x4& w         = inst_data.world;
-        OptixInstance&   inst      = instances[i];
-        std::memset(&inst, 0, sizeof(inst));
-
-        // OptiX instance transform = row-major 3×4 (last row [0,0,0,1] implicit).
-        // Our Matrix4x4 is also row-major, so rows 0–2 copy directly.
+        // OptiX stores a row-major 3×4 transform (last row [0 0 0 1] implicit).
         inst.transform[0]  = w.m[0][0];  inst.transform[1]  = w.m[0][1];
         inst.transform[2]  = w.m[0][2];  inst.transform[3]  = w.m[0][3];
         inst.transform[4]  = w.m[1][0];  inst.transform[5]  = w.m[1][1];
         inst.transform[6]  = w.m[1][2];  inst.transform[7]  = w.m[1][3];
         inst.transform[8]  = w.m[2][0];  inst.transform[9]  = w.m[2][1];
         inst.transform[10] = w.m[2][2];  inst.transform[11] = w.m[2][3];
+    };
 
-        inst.instanceId        = static_cast<unsigned int>(i);
-        inst.sbtOffset         = static_cast<unsigned int>(i);
-        inst.visibilityMask    = 0xFF;
-        inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
-        inst.traversableHandle = m_meshBuffers[inst_data.meshIdx].blas;
+    std::function<void(int, const Matrix4x4&)> walkNode =
+        [&](int nodeIdx, const Matrix4x4& parentWorld)
+    {
+        const Node3D& node    = *allNodes[nodeIdx];
+        const Matrix4x4 world = mat4Multiply(parentWorld, node.localTransform);
+
+        if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
+        {
+            for (int j = 0; j < static_cast<int>(mn->meshIndices.size()); ++j)
+            {
+                const int mi = mn->meshIndices[j];
+                if (mi < 0 || mi >= static_cast<int>(meshes.size())) { continue; }
+
+                OptixInstance inst = {};
+                setTransform(inst, world);
+                inst.instanceId        = static_cast<unsigned int>(instances.size());
+                inst.sbtOffset         = static_cast<unsigned int>(instances.size());
+                inst.visibilityMask    = 0xFF;
+                inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
+                inst.traversableHandle = m_meshBuffers[mi].blas;
+                instances.push_back(inst);
+            }
+        }
+        else if (dynamic_cast<const ImplicitNode*>(&node))
+        {
+            if (m_implicitBlas != 0)
+            {
+                OptixInstance inst = {};
+                setTransform(inst, world);
+                inst.instanceId        = static_cast<unsigned int>(instances.size());
+                inst.sbtOffset         = static_cast<unsigned int>(instances.size());
+                inst.visibilityMask    = 0xFF;
+                inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
+                inst.traversableHandle = m_implicitBlas;
+                instances.push_back(inst);
+            }
+        }
+
+        for (int childIdx : node.children)
+        {
+            walkNode(childIdx, world);
+        }
+    };
+
+    const Matrix4x4 identity = mat4Identity();
+    for (int rootIdx : scene.rootNodes())
+    {
+        walkNode(rootIdx, identity);
+    }
+
+    if (instances.empty())
+    {
+        return;
     }
 
     m_instanceBuffer.allocAndUpload(instances.data(), instances.size() * sizeof(OptixInstance));
 
-    OptixBuildInput tlasInput                          = {};
-    tlasInput.type                                     = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
-    tlasInput.instanceArray.instances                  = m_instanceBuffer.ptr();
-    tlasInput.instanceArray.numInstances               =
-        static_cast<unsigned int>(instances.size());
+    OptixBuildInput tlasInput                = {};
+    tlasInput.type                           = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
+    tlasInput.instanceArray.instances        = m_instanceBuffer.ptr();
+    tlasInput.instanceArray.numInstances     = static_cast<unsigned int>(instances.size());
 
     OptixAccelBuildOptions tlasOpts = {};
     tlasOpts.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
     tlasOpts.operation  = OPTIX_BUILD_OPERATION_BUILD;
 
     OptixAccelBufferSizes tlasSizes = {};
-    OPTIX_CHECK(optixAccelComputeMemoryUsage(
-        ctx, &tlasOpts, &tlasInput, 1, &tlasSizes));
+    OPTIX_CHECK(optixAccelComputeMemoryUsage(ctx, &tlasOpts, &tlasInput, 1, &tlasSizes));
 
     GPUBuffer tlasTempBuffer;
     tlasTempBuffer.alloc(tlasSizes.tempSizeInBytes);
@@ -296,19 +341,18 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
     OPTIX_CHECK(optixAccelBuild(
         ctx, nullptr,
         &tlasOpts, &tlasInput, 1,
-        tlasTempBuffer.ptr(),      tlasTempBuffer.size(),
-        m_tlasOutputBuffer.ptr(),  m_tlasOutputBuffer.size(),
+        tlasTempBuffer.ptr(),     tlasTempBuffer.size(),
+        m_tlasOutputBuffer.ptr(), m_tlasOutputBuffer.size(),
         &m_tlas, nullptr, 0));
 
     CUDA_CHECK(cudaDeviceSynchronize());
-    // tlasTempBuffer freed automatically at end of scope
 }
 
 // ─── Accel::rebuildTlas ───────────────────────────────────────────────────────
 
 void Accel::rebuildTlas(OptixDeviceContext ctx, const Scene& scene)
 {
-    if (m_meshBuffers.empty())
+    if (m_meshBuffers.empty() && m_implicitBlas == 0)
     {
         return;  // no BLASes built yet — nothing to instance
     }

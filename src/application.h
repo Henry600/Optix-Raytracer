@@ -92,11 +92,12 @@ private:
 
     // OptiX pipeline
     OptixModule       m_module        = nullptr;
-    OptixProgramGroup m_pgRaygen      = nullptr;
-    OptixProgramGroup m_pgMiss        = nullptr;
-    OptixProgramGroup m_pgMissShadow  = nullptr;
-    OptixProgramGroup m_pgHitgroup    = nullptr;
-    OptixPipeline     m_pipeline      = nullptr;
+    OptixProgramGroup m_pgRaygen          = nullptr;
+    OptixProgramGroup m_pgMiss            = nullptr;
+    OptixProgramGroup m_pgMissShadow      = nullptr;
+    OptixProgramGroup m_pgHitgroup        = nullptr;  // triangle meshes
+    OptixProgramGroup m_pgHitgroupImplicit = nullptr; // analytic implicit shapes
+    OptixPipeline     m_pipeline          = nullptr;
 
     // Shader binding table
     GPUBuffer               m_sbtRaygenBuffer;

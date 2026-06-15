@@ -22,9 +22,10 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 
 ### Scene
 - **glTF 2.0 / GLB loading** — meshes, PBR materials (including `KHR_materials_transmission`, `KHR_materials_ior`, `KHR_materials_clearcoat`), base-colour textures, cameras, scene hierarchy
-- **Scene graph** — full glTF node hierarchy preserved as a `Node3D` tree (`MeshNode`, `CameraNode`, `GroupNode`)
+- **Scene graph** — full glTF node hierarchy preserved as a `Node3D` tree (`MeshNode`, `CameraNode`, `GroupNode`, `ImplicitNode`)
 - **Node transforms applied to TLAS** — mesh instances positioned using accumulated world-space transforms from the node hierarchy
 - **Live transform editing** — 3D gizmo (ImGuizmo) overlaid on the viewport for interactive Translate / Rotate / Scale in Local or World space; raw matrix fields remain available for precise values; TLAS-only rebuild keeps BLASes intact
+- **Analytic implicit shapes** — `ImplicitNode` renders Sphere, Box, or Cylinder via OptiX custom primitives (`OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES`); shapes are canonical unit forms in local space so the node's TRS transform controls size and placement; all full PBR materials (including transmission and clearcoat) apply identically to implicit shapes and mesh geometry
 
 ### Camera
 - **Free-fly camera** — WASD (move), EQ (up/down), right-drag (look), Ctrl+drag (orbit origin), Shift+drag (rotate environment)
@@ -37,8 +38,8 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 | **Viewport** | Live rendered image, resizes dynamically |
 | **Raytracer** | GPU stats, sample count, denoiser toggle, environment controls, HDR output toggle, paper-white slider (active when Windows HDR is on) |
 | **Resources** | Collapsible sub-categories: **Materials** (per-material PBR editor with albedo swatch preview) and **Textures** (loaded scene textures with dimensions and format) |
-| **Scene Graph** | Hierarchy tree of all scene nodes (click to select) |
-| **Node Properties** | Gizmo operation / space selector, TRS sliders, raw transform matrix, material editor, camera parameters for the selected node |
+| **Scene Graph** | Hierarchy tree of all scene nodes (click to select); **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
+| **Node Properties** | Gizmo operation / space selector, TRS sliders, raw transform matrix, material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
 
 ### Performance
@@ -212,6 +213,7 @@ Optix-Raytracer/
     │                               column-major converters for ImGuizmo interop
     ├── camera.h                    Camera struct: transform, FOV, DoF parameters
     ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode
+    ├── implicit_node.h             ImplicitNode (Sphere / Box / Cylinder) with shape type enum and material index
     ├── scene.h/.cpp                Scene container: meshes, materials, textures, node tree
     ├── mesh.h                      Host-side mesh: separate vertex attribute arrays
     ├── texture.h/.cpp              RAII GPU texture: RGBA8 / RGBA32F; EXR loading via

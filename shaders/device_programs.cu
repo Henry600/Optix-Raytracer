@@ -1129,3 +1129,259 @@ extern "C" __global__ void __closesthit__radiance()
 
     vtx->hit = 1;
 }
+
+// ─── Implicit shape intersection helpers ─────────────────────────────────────
+// All shapes are canonical unit forms in object space ([-1,1]^3 AABB).
+// OptiX transforms the world-space ray into object space automatically before
+// calling the intersection program.
+
+// Unit sphere x²+y²+z²=1.  Returns smallest valid t, or -1 on miss.
+static __forceinline__ __device__
+float implicitSphereT(const float3& ro, const float3& rd)
+{
+    const float a    = devDot(rd, rd);
+    const float b    = 2.0f * devDot(ro, rd);
+    const float c    = devDot(ro, ro) - 1.0f;
+    const float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f) { return -1.0f; }
+    const float sq   = sqrtf(disc);
+    const float tMin = optixGetRayTmin();
+    const float tMax = optixGetRayTmax();
+    const float t1   = (-b - sq) / (2.0f * a);
+    if (t1 >= tMin && t1 <= tMax) { return t1; }
+    const float t2   = (-b + sq) / (2.0f * a);
+    if (t2 >= tMin && t2 <= tMax) { return t2; }
+    return -1.0f;
+}
+
+// Unit cube [-1,1]^3.  Returns smallest valid t and writes outward face normal.
+// Returns -1 on miss.
+static __forceinline__ __device__
+float implicitBoxT(const float3& ro, const float3& rd, float3& outN)
+{
+    const float tMin = optixGetRayTmin();
+    const float tMax = optixGetRayTmax();
+
+    const float invDx = 1.0f / rd.x;
+    const float invDy = 1.0f / rd.y;
+    const float invDz = 1.0f / rd.z;
+
+    const float tx1 = (-1.0f - ro.x) * invDx;
+    const float tx2 = ( 1.0f - ro.x) * invDx;
+    const float ty1 = (-1.0f - ro.y) * invDy;
+    const float ty2 = ( 1.0f - ro.y) * invDy;
+    const float tz1 = (-1.0f - ro.z) * invDz;
+    const float tz2 = ( 1.0f - ro.z) * invDz;
+
+    const float txN = fminf(tx1, tx2);  const float txF = fmaxf(tx1, tx2);
+    const float tyN = fminf(ty1, ty2);  const float tyF = fmaxf(ty1, ty2);
+    const float tzN = fminf(tz1, tz2);  const float tzF = fmaxf(tz1, tz2);
+
+    const float tNear = fmaxf(fmaxf(txN, tyN), tzN);
+    const float tFar  = fminf(fminf(txF, tyF), tzF);
+
+    if (tNear > tFar) { return -1.0f; }
+
+    float t = tNear;
+    if (t < tMin) { t = tFar; }
+    if (t < tMin || t > tMax) { return -1.0f; }
+
+    const float3 p  = ro + rd * t;
+    const float  ax = fabsf(p.x);
+    const float  ay = fabsf(p.y);
+    const float  az = fabsf(p.z);
+    if (ax >= ay && ax >= az)
+    {
+        outN = make_float3(p.x > 0.0f ? 1.0f : -1.0f, 0.0f, 0.0f);
+    }
+    else if (ay >= ax && ay >= az)
+    {
+        outN = make_float3(0.0f, p.y > 0.0f ? 1.0f : -1.0f, 0.0f);
+    }
+    else
+    {
+        outN = make_float3(0.0f, 0.0f, p.z > 0.0f ? 1.0f : -1.0f);
+    }
+    return t;
+}
+
+// Y-axis cylinder, radius=1, y∈[-1,1].  Barrel + two caps.
+// Returns smallest valid t and writes outward normal.  Returns -1 on miss.
+static __forceinline__ __device__
+float implicitCylinderT(const float3& ro, const float3& rd, float3& outN)
+{
+    const float tMin  = optixGetRayTmin();
+    const float tMax  = optixGetRayTmax();
+    float bestT       = -1.0f;
+    float3 bestN      = make_float3(0.0f, 1.0f, 0.0f);
+
+    // ── Barrel: x²+z² = 1 ────────────────────────────────────────────────────
+    const float a = rd.x * rd.x + rd.z * rd.z;
+    if (fabsf(a) > 1e-8f)
+    {
+        const float b    = 2.0f * (ro.x * rd.x + ro.z * rd.z);
+        const float c    = ro.x * ro.x + ro.z * ro.z - 1.0f;
+        const float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f)
+        {
+            const float sq = sqrtf(disc);
+            const float t1 = (-b - sq) / (2.0f * a);
+            const float t2 = (-b + sq) / (2.0f * a);
+            for (int k = 0; k < 2; ++k)
+            {
+                const float t = (k == 0) ? t1 : t2;
+                if (t < tMin || t > tMax) { continue; }
+                const float y = ro.y + t * rd.y;
+                if (y < -1.0f || y > 1.0f) { continue; }
+                if (bestT < 0.0f || t < bestT)
+                {
+                    bestT = t;
+                    const float3 p = ro + rd * t;
+                    bestN = make_float3(p.x, 0.0f, p.z);
+                }
+            }
+        }
+    }
+
+    // ── Caps: y = ±1 ─────────────────────────────────────────────────────────
+    if (fabsf(rd.y) > 1e-8f)
+    {
+        for (int k = 0; k < 2; ++k)
+        {
+            const float capY = (k == 0) ? -1.0f : 1.0f;
+            const float t    = (capY - ro.y) / rd.y;
+            if (t < tMin || t > tMax) { continue; }
+            const float3 p = ro + rd * t;
+            if (p.x * p.x + p.z * p.z > 1.0f) { continue; }
+            if (bestT < 0.0f || t < bestT)
+            {
+                bestT = t;
+                bestN = make_float3(0.0f, capY, 0.0f);
+            }
+        }
+    }
+
+    if (bestT >= 0.0f) { outN = devNormalize(bestN); }
+    return bestT;
+}
+
+// ─── Implicit: intersection program ──────────────────────────────────────────
+
+extern "C" __global__ void __intersection__implicit()
+{
+    const ImplicitShapeData& shape =
+        *reinterpret_cast<const ImplicitShapeData*>(optixGetSbtDataPointer());
+
+    const float3 ro = optixGetObjectRayOrigin();
+    const float3 rd = optixGetObjectRayDirection();
+
+    float  t      = -1.0f;
+    float3 normal = make_float3(0.0f, 1.0f, 0.0f);
+
+    if (shape.type == IMPLICIT_SPHERE)
+    {
+        t = implicitSphereT(ro, rd);
+        if (t >= 0.0f)
+        {
+            normal = devNormalize(ro + rd * t);
+        }
+    }
+    else if (shape.type == IMPLICIT_BOX)
+    {
+        t = implicitBoxT(ro, rd, normal);
+    }
+    else  // IMPLICIT_CYLINDER
+    {
+        t = implicitCylinderT(ro, rd, normal);
+    }
+
+    if (t >= 0.0f)
+    {
+        // Pass the object-space normal via 3 attribute registers.
+        // numAttributeValues must be >= 3 in the pipeline compile options.
+        optixReportIntersection(t, 0,
+            __float_as_uint(normal.x),
+            __float_as_uint(normal.y),
+            __float_as_uint(normal.z));
+    }
+}
+
+// ─── Implicit: any-hit program ────────────────────────────────────────────────
+
+extern "C" __global__ void __anyhit__implicit()
+{
+    const ImplicitShapeData& shape =
+        *reinterpret_cast<const ImplicitShapeData*>(optixGetSbtDataPointer());
+    if (   shape.materialIndex >= 0
+        && optixLaunchParams.materials
+        && optixLaunchParams.materials[shape.materialIndex].thinWalled)
+    {
+        const float3 alb = srgbToLinear3(
+            optixLaunchParams.materials[shape.materialIndex].albedo);
+        optixSetPayload_1(__float_as_uint(__uint_as_float(optixGetPayload_1()) * alb.x));
+        optixSetPayload_2(__float_as_uint(__uint_as_float(optixGetPayload_2()) * alb.y));
+        optixSetPayload_3(__float_as_uint(__uint_as_float(optixGetPayload_3()) * alb.z));
+        optixIgnoreIntersection();
+    }
+    else
+    {
+        optixTerminateRay();
+    }
+}
+
+// ─── Implicit: closest-hit program ───────────────────────────────────────────
+
+extern "C" __global__ void __closesthit__implicit()
+{
+    PathVertex* vtx = unpackVertex(optixGetPayload_0(), optixGetPayload_1());
+
+    const ImplicitShapeData& shape =
+        *reinterpret_cast<const ImplicitShapeData*>(optixGetSbtDataPointer());
+
+    // Object-space normal written by __intersection__implicit via attributes.
+    const float3 n_obj = make_float3(
+        __uint_as_float(optixGetAttribute_0()),
+        __uint_as_float(optixGetAttribute_1()),
+        __uint_as_float(optixGetAttribute_2()));
+
+    vtx->N   = devNormalize(optixTransformNormalFromObjectToWorldSpace(n_obj));
+    vtx->t   = optixGetRayTmax();
+    vtx->pos = optixGetWorldRayOrigin() + optixGetWorldRayDirection() * vtx->t;
+
+    if (optixLaunchParams.materials && shape.materialIndex >= 0)
+    {
+        const MaterialData& mat = optixLaunchParams.materials[shape.materialIndex];
+
+        vtx->albedo    = srgbToLinear3(mat.albedo);
+        vtx->roughness = mat.roughness;
+        vtx->metallic  = mat.metallic;
+
+        vtx->emission = srgbToLinear3(mat.emission) * mat.emissionScale;
+
+        vtx->transmission         = mat.transmission;
+        vtx->ior                  = mat.ior;
+        vtx->absorptionDistance   = fmaxf(mat.absorptionDistance, 1e-4f);
+        vtx->scatteringCoeff      = make_float3(fmaxf(mat.scatteringCoeff.x, 0.0f),
+                                                fmaxf(mat.scatteringCoeff.y, 0.0f),
+                                                fmaxf(mat.scatteringCoeff.z, 0.0f));
+        vtx->scatteringAnisotropy = mat.scatteringAnisotropy;
+        vtx->clearcoat            = mat.clearcoat;
+        vtx->clearcoatRoughness   = mat.clearcoatRoughness;
+        vtx->thinWalled           = mat.thinWalled;
+    }
+    else
+    {
+        vtx->albedo             = make_float3(0.8f, 0.8f, 0.8f);
+        vtx->roughness          = 0.5f;
+        vtx->metallic           = 0.0f;
+        vtx->emission           = make_float3(0.0f, 0.0f, 0.0f);
+        vtx->transmission       = 0.0f;
+        vtx->ior                = 1.5f;
+        vtx->absorptionDistance = 1.0f;
+        vtx->clearcoat          = 0.0f;
+        vtx->clearcoatRoughness = 0.0f;
+        vtx->thinWalled         = 0;
+    }
+
+    vtx->hit = 1;
+}

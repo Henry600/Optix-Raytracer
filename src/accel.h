@@ -14,6 +14,7 @@ class Scene;
 
 // Manages the OptiX acceleration structure for a loaded scene:
 //   - one BLAS (bottom-level AS) per mesh, built with compaction
+//   - one shared custom-primitive BLAS for all implicit shape nodes
 //   - one TLAS (top-level AS) instancing all BLASes with node world-space transforms
 //
 // The traversable handle exposed here is stored in LaunchParams and passed to
@@ -41,9 +42,12 @@ public:
     // Free all device memory and reset to empty state. Safe to call multiple times.
     void destroy();
 
-    OptixTraversableHandle traversable() const { return m_tlas; }
-    bool                   valid()       const { return m_tlas != 0; }
-    size_t                 meshCount()   const { return m_meshBuffers.size(); }
+    OptixTraversableHandle traversable()  const { return m_tlas; }
+    bool                   valid()        const { return m_tlas != 0; }
+    size_t                 meshCount()    const { return m_meshBuffers.size(); }
+
+    // Shared BLAS used by all implicit shape TLAS instances.
+    OptixTraversableHandle implicitBlas() const { return m_implicitBlas; }
 
     // Per-mesh device pointers needed to fill SBT hit group records.
     struct MeshDevicePtrs
@@ -78,6 +82,13 @@ private:
     GPUBuffer                m_instanceBuffer;   // device OptixInstance array
     OptixTraversableHandle   m_tlas             = 0;
 
+    // Shared custom-primitive BLAS for all implicit shape instances.
+    // All canonical shapes occupy [-1,1]^3; the intersection program reads
+    // the shape type from the per-instance SBT record.
+    GPUBuffer              m_implicitAabbBuf;
+    GPUBuffer              m_implicitOutputAS;
+    OptixTraversableHandle m_implicitBlas = 0;
+
     // Uploads vertex/index data and builds one BLAS with compaction.
     // Writes to buffers.positions, buffers.indices, buffers.outputAS, buffers.blas.
     static void buildBlas(
@@ -85,6 +96,9 @@ private:
         MeshBuffers&       buffers,
         unsigned int       vertexCount,
         unsigned int       triangleCount);
+
+    // Builds the shared custom-primitive BLAS for implicit shapes.
+    void buildImplicitBlas(OptixDeviceContext ctx);
 
     // Frees old TLAS resources, recomputes world transforms from the scene node
     // hierarchy, then rebuilds the TLAS. Called by both build() and rebuildTlas().
