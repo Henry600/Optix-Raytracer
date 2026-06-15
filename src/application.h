@@ -177,6 +177,11 @@ private:
     ImGuizmo::MODE      m_gizmoMode = ImGuizmo::LOCAL;
 
     void updateCamera();
+
+    void drawRaytracerPanel();
+    void drawResourcesPanel();
+    void drawSceneGraphPanel();
+    void drawNodePropertiesPanel();
 };
 
 #endif // OPTIX_RAYTRACER_APPLICATION_H

@@ -198,7 +198,11 @@ Optix-Raytracer/
 │   └── regen_ui_spv.ps1            PowerShell script to recompile the UI shaders via glslc
 └── src/
     ├── main.cpp                    Entry point
-    ├── application.h/.cpp          CUDA/OptiX init, ImGui UI, per-frame render loop
+    ├── application.h/.cpp          CUDA/OptiX init, viewport panel, per-frame render loop
+    ├── ui_raytracer_panel.cpp      Raytracer panel: GPU stats, scene/env controls, denoiser, HDR
+    ├── ui_resources_panel.cpp      Resources panel: full PBR material editor, texture list
+    ├── ui_scene_graph_panel.cpp    Scene Graph panel: node hierarchy tree, Add Implicit Shape
+    ├── ui_node_properties_panel.cpp Node Properties panel: TRS editor, per-type settings
     ├── gpu_buffer.h                RAII CUDA device allocation (GPUBuffer): alloc / free /
     │                               upload / download / clear; non-copyable, movable
     ├── vulkan_context.h/.cpp       Vulkan device, swapchain, render pass, display image,
