@@ -1,4 +1,5 @@
-#pragma once
+#ifndef OPTIX_RAYTRACER_GPU_BUFFER_H
+#define OPTIX_RAYTRACER_GPU_BUFFER_H
 
 #include <cuda_runtime.h>
 #include <stdexcept>
@@ -43,8 +44,7 @@ public:
         cudaError_t rc = cudaMalloc(reinterpret_cast<void**>(&m_ptr), bytes);
         if (rc != cudaSuccess)
         {
-            throw std::runtime_error(
-                std::string("GPUBuffer::alloc failed: ") + cudaGetErrorString(rc));
+            throw std::runtime_error(std::string("GPUBuffer::alloc failed: ") + cudaGetErrorString(rc));
         }
         m_size = bytes;
     }
@@ -60,27 +60,30 @@ public:
         }
     }
 
+    // Allocate `bytes` on the device and upload `bytes` from `src` (host) in one step.
+    void allocAndUpload(const void* src, size_t bytes)
+    {
+        alloc(bytes);
+        upload(src, bytes);
+    }
+
     // Copy `bytes` from `src` (host) into the device buffer.
     void upload(const void* src, size_t bytes)
     {
-        cudaError_t rc = cudaMemcpy(
-            reinterpret_cast<void*>(m_ptr), src, bytes, cudaMemcpyHostToDevice);
+        cudaError_t rc = cudaMemcpy(reinterpret_cast<void*>(m_ptr), src, bytes, cudaMemcpyHostToDevice);
         if (rc != cudaSuccess)
         {
-            throw std::runtime_error(
-                std::string("GPUBuffer::upload failed: ") + cudaGetErrorString(rc));
+            throw std::runtime_error(std::string("GPUBuffer::upload failed: ") + cudaGetErrorString(rc));
         }
     }
 
     // Copy `bytes` from the device buffer into `dst` (host).
     void download(void* dst, size_t bytes) const
     {
-        cudaError_t rc = cudaMemcpy(
-            dst, reinterpret_cast<const void*>(m_ptr), bytes, cudaMemcpyDeviceToHost);
+        cudaError_t rc = cudaMemcpy(dst, reinterpret_cast<const void*>(m_ptr), bytes, cudaMemcpyDeviceToHost);
         if (rc != cudaSuccess)
         {
-            throw std::runtime_error(
-                std::string("GPUBuffer::download failed: ") + cudaGetErrorString(rc));
+            throw std::runtime_error(std::string("GPUBuffer::download failed: ") + cudaGetErrorString(rc));
         }
     }
 
@@ -94,8 +97,8 @@ public:
     }
 
     // Raw device pointer — cast to CUdeviceptr for OptiX / CUDA driver APIs.
-    CUdeviceptr ptr()   const { return m_ptr; }
-    size_t      size()  const { return m_size; }
+    CUdeviceptr ptr()   const { return m_ptr;      }
+    size_t      size()  const { return m_size;     }
     bool        valid() const { return m_ptr != 0; }
 
     // Typed device pointer for CUDA runtime and struct assignments.
@@ -106,3 +109,5 @@ private:
     CUdeviceptr m_ptr  = 0;
     size_t      m_size = 0;
 };
+
+#endif // OPTIX_RAYTRACER_GPU_BUFFER_H

@@ -223,29 +223,18 @@ void Scene::uploadTextures()
 
     if (!objs.empty())
     {
-        CUDA_CHECK_SCENE(cudaMalloc(reinterpret_cast<void**>(&m_textureObjectsBuffer),
-                                    objs.size() * sizeof(cudaTextureObject_t)));
-        CUDA_CHECK_SCENE(cudaMemcpy(reinterpret_cast<void*>(m_textureObjectsBuffer),
-                                    objs.data(),
-                                    objs.size() * sizeof(cudaTextureObject_t),
-                                    cudaMemcpyHostToDevice));
+        m_textureObjectsBuffer.allocAndUpload(objs.data(), objs.size() * sizeof(cudaTextureObject_t));
     }
 }
 
 void Scene::destroyTextureObjects()
 {
-    if (m_textureObjectsBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_textureObjectsBuffer));
-        m_textureObjectsBuffer = 0;
-    }
+    m_textureObjectsBuffer.free();
 }
 
 const cudaTextureObject_t* Scene::textureObjects() const
 {
-    return m_textureObjectsBuffer
-        ? reinterpret_cast<const cudaTextureObject_t*>(m_textureObjectsBuffer)
-        : nullptr;
+    return m_textureObjectsBuffer.typedPtr<const cudaTextureObject_t>();
 }
 
 void Scene::clear()

@@ -3,6 +3,7 @@
 
 #include "accel.h"
 #include "camera.h"
+#include "gpu_buffer.h"
 #include "mesh.h"
 #include "node_3d.h"
 #include "texture.h"
@@ -114,7 +115,7 @@ private:
     std::vector<int>                     m_rootNodes;
 
     std::unique_ptr<Accel> m_accel;  // null until buildAccel() is called
-    CUdeviceptr m_textureObjectsBuffer = 0;  // device cudaTextureObject_t[]
+    GPUBuffer m_textureObjectsBuffer;  // device cudaTextureObject_t[]
 };
 
 #endif // OPTIX_RAYTRACER_SCENE_H

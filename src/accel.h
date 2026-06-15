@@ -5,6 +5,8 @@
 #include <optix_stubs.h>
 #include <cuda_runtime.h>
 
+#include "gpu_buffer.h"
+
 #include <vector>
 
 // Forward declaration — Accel.cpp includes Scene.h
@@ -53,27 +55,27 @@ public:
     };
     MeshDevicePtrs meshDevicePtrs(size_t idx) const
     {
-        return { m_meshBuffers[idx].positions,
-                 m_meshBuffers[idx].normals,
-                 m_meshBuffers[idx].uvs,
-                 m_meshBuffers[idx].indices };
+        return { m_meshBuffers[idx].positions.ptr(),
+                 m_meshBuffers[idx].normals.ptr(),
+                 m_meshBuffers[idx].uvs.ptr(),
+                 m_meshBuffers[idx].indices.ptr() };
     }
 
 private:
     // Per-mesh device buffers kept alive for the lifetime of the AS.
     struct MeshBuffers
     {
-        CUdeviceptr            positions = 0;  // device copy of Mesh::positions
-        CUdeviceptr            normals   = 0;  // device copy of Mesh::normals
-        CUdeviceptr            uvs       = 0;  // device copy of Mesh::uvs (0 if absent)
-        CUdeviceptr            indices   = 0;  // device copy of Mesh::indices
-        CUdeviceptr            outputAS  = 0;  // compacted BLAS output buffer
-        OptixTraversableHandle blas      = 0;
+        GPUBuffer              positions;  // device copy of Mesh::positions
+        GPUBuffer              normals;    // device copy of Mesh::normals
+        GPUBuffer              uvs;        // device copy of Mesh::uvs (absent = not valid())
+        GPUBuffer              indices;    // device copy of Mesh::indices
+        GPUBuffer              outputAS;   // compacted BLAS output buffer
+        OptixTraversableHandle blas = 0;
     };
 
     std::vector<MeshBuffers> m_meshBuffers;
-    CUdeviceptr              m_tlasOutputBuffer = 0;
-    CUdeviceptr              m_instanceBuffer   = 0;  // device OptixInstance array
+    GPUBuffer                m_tlasOutputBuffer;
+    GPUBuffer                m_instanceBuffer;   // device OptixInstance array
     OptixTraversableHandle   m_tlas             = 0;
 
     // Uploads vertex/index data and builds one BLAS with compaction.

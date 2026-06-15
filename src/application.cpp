@@ -464,15 +464,13 @@ void Application::buildSbt()
     // ── Raygen record ─────────────────────────────────────────────────────────
     RaygenRecord raygenRec = {};
     OPTIX_CHECK(optixSbtRecordPackHeader(m_pgRaygen, &raygenRec));
-    m_sbtRaygenBuffer.alloc(sizeof(RaygenRecord));
-    m_sbtRaygenBuffer.upload(&raygenRec, sizeof(RaygenRecord));
+    m_sbtRaygenBuffer.allocAndUpload(&raygenRec, sizeof(RaygenRecord));
 
     // ── Miss records — index 0 = radiance, index 1 = NEE shadow ─────────────
     MissRecord missRecs[2] = {};
     OPTIX_CHECK(optixSbtRecordPackHeader(m_pgMiss,       &missRecs[0]));
     OPTIX_CHECK(optixSbtRecordPackHeader(m_pgMissShadow, &missRecs[1]));
-    m_sbtMissBuffer.alloc(sizeof(missRecs));
-    m_sbtMissBuffer.upload(missRecs, sizeof(missRecs));
+    m_sbtMissBuffer.allocAndUpload(missRecs, sizeof(missRecs));
 
     // ── Hit group records — one per TLAS instance ────────────────────────────
     // Walk the node tree in the same DFS order as buildTlasPhase so that
@@ -530,9 +528,7 @@ void Application::buildSbt()
 
     if (!hitRecs.empty())
     {
-        const size_t hitByteSize = hitRecs.size() * sizeof(HitGroupRecord);
-        m_sbtHitgroupBuffer.alloc(hitByteSize);
-        m_sbtHitgroupBuffer.upload(hitRecs.data(), hitByteSize);
+        m_sbtHitgroupBuffer.allocAndUpload(hitRecs.data(), hitRecs.size() * sizeof(HitGroupRecord));
     }
 
     // ── Fill the SBT descriptor ───────────────────────────────────────────────
