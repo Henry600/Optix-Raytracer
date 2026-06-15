@@ -1139,15 +1139,15 @@ void VulkanContext::endOneShot(VkCommandBuffer cmd)
 
 // ─── Generic ImGui textures ───────────────────────────────────────────────────
 
-ImGuiTexture VulkanContext::createImGuiTexture(int w, int h, const uint8_t* rgba8)
+ImGuiTexture VulkanContext::createImGuiTexture(int w, int h, const uint16_t* rgbaF16)
 {
     ImGuiTexture tex;
-    const size_t pixelBytes = static_cast<size_t>(w) * h * 4u;
+    const size_t pixelBytes = static_cast<size_t>(w) * h * 8u;  // 4 × uint16_t per pixel
 
     // ── Device-local image ────────────────────────────────────────────────────
-    // Use an sRGB view so the sampler auto-linearises texels — the UI
-    // pipeline's shader multiplies textures in unconverted.
-    const VkFormat texFormat = VK_FORMAT_R8G8B8A8_SRGB;
+    // Linear RGBA16F: the scRGB pipeline samples linear floats directly;
+    // highlights above 1.0 appear above paper-white on HDR displays.
+    const VkFormat texFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     VkImageCreateInfo imgCI = {};
     imgCI.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -1194,7 +1194,7 @@ ImGuiTexture VulkanContext::createImGuiTexture(int w, int h, const uint8_t* rgba
 
     void* mapped = nullptr;
     vkMapMemory(m_device, stagingMem, 0, pixelBytes, 0, &mapped);
-    std::memcpy(mapped, rgba8, pixelBytes);
+    std::memcpy(mapped, rgbaF16, pixelBytes);
     vkUnmapMemory(m_device, stagingMem);
 
     // ── One-shot: UNDEFINED → TRANSFER_DST, copy, TRANSFER_DST → SHADER_READ ─

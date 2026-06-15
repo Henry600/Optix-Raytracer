@@ -98,10 +98,10 @@ public:
     void endFrameAndPresent(VulkanFrameContext& frame, int windowW, int windowH);
 
     // ── Generic ImGui textures (thumbnails, previews, …) ─────────────────────
-    // Upload an RGBA8 image as an ImGui-registered sampled texture.
+    // Upload an RGBA16F linear image as an ImGui-registered sampled texture.
     // Uses a synchronous one-shot command submit — call outside an active frame
     // (i.e. before beginFrame() or after endFrameAndPresent()).
-    ImGuiTexture createImGuiTexture(int w, int h, const uint8_t* rgba8);
+    ImGuiTexture createImGuiTexture(int w, int h, const uint16_t* rgbaF16);
 
     // Free all Vulkan resources owned by tex and un-register it from ImGui.
     // Safe to call on a default-constructed (invalid) texture; zeroes tex on return.

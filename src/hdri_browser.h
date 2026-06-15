@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -13,7 +14,7 @@
 
 // ─── Thumbnail dimensions ─────────────────────────────────────────────────────
 // 256 × 128 matches the 2:1 equirectangular aspect ratio of most HDRIs and
-// keeps GPU memory modest (~128 KB per thumbnail as RGBA8).
+// keeps GPU memory modest (~256 KB per thumbnail as RGBA16F).
 inline constexpr int THUMB_W       = 256;
 inline constexpr int THUMB_H       = 128;
 inline constexpr int THUMB_WORKERS = 16;   // max concurrent loader threads
@@ -83,9 +84,9 @@ private:
     struct WorkItem  { int idx; std::string path; };
     struct ReadyItem
     {
-        int                  idx;
-        std::vector<uint8_t> pixels;    // RGBA8, THUMB_W × THUMB_H; empty = error
-        std::string          errorMsg;
+        int                    idx;
+        std::vector<uint16_t>  pixels;    // RGBA16F linear, THUMB_W × THUMB_H; empty = error
+        std::string            errorMsg;
     };
 
     // ── Thread pool ───────────────────────────────────────────────────────────
@@ -96,10 +97,11 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────────
     void clearEntries(VulkanContext& vkCtx);
 
-    // Box-filter downsample + log-average auto-exposure + Reinhard tone-map +
-    // sRGB gamma encode.  Called on a worker thread.
+    // Box-filter downsample + log-average auto-exposure → linear RGBA16F.
+    // No tone-mapping: highlights above 1.0 are preserved so the scRGB pipeline
+    // can display them above paper-white on HDR monitors.  Called on a worker thread.
     static void generateThumbnail(const float* srcRgba32f, int srcW, int srcH,
-                                  uint8_t* dstRgba8,  int dstW, int dstH);
+                                  uint16_t*    dstRgba16f, int dstW, int dstH);
 
     // ── State ─────────────────────────────────────────────────────────────────
     std::string             m_folder;

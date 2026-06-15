@@ -24,6 +24,20 @@
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Portable IEEE 754 float32 → float16 (round toward zero).
+// Matches the implementation in vulkan_context.cpp.
+static uint16_t f32ToF16(float f)
+{
+    uint32_t bits;
+    std::memcpy(&bits, &f, sizeof(bits));
+    const uint32_t sign   = (bits >> 16) & 0x8000u;
+    const int32_t  expUnb = static_cast<int32_t>((bits >> 23) & 0xFFu) - 127 + 15;
+    const uint32_t mant   = bits & 0x7FFFFFu;
+    if (expUnb <= 0)  { return static_cast<uint16_t>(sign); }
+    if (expUnb >= 31) { return static_cast<uint16_t>(sign | 0x7C00u); }
+    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(expUnb) << 10) | (mant >> 13));
+}
+
 // FNV-1a 64-bit hash — fast, dependency-free, good distribution for file paths.
 static uint64_t fnv1a64(const std::string& s)
 {
@@ -119,7 +133,7 @@ void HdriBrowser::workerLoop()
         //   uint32_t version  = THUMB_W<<16|THUMB_H  (invalidates on dim change)
         //   int64_t  mtime    = last_write_time().time_since_epoch().count()
         //   uint64_t filesize = source file size in bytes
-        //   uint8_t  pixels[THUMB_W * THUMB_H * 4]
+        //   float    pixels[THUMB_W * THUMB_H * 4]   (RGBA32F linear)
         bool cacheHit = false;
         std::filesystem::path cachePath;
         std::error_code statEc;
@@ -146,8 +160,9 @@ void HdriBrowser::workerLoop()
                 std::ifstream ifs(cachePath, std::ios::binary);
                 if (ifs)
                 {
+                    // Top two bits = 0b11 → RGBA16F format (0b10 = RGBA32F, 0b00 = old RGBA8).
                     constexpr uint32_t kVersion =
-                        (static_cast<uint32_t>(THUMB_W) << 16) | THUMB_H;
+                        ((static_cast<uint32_t>(THUMB_W) << 16) | THUMB_H) | 0xC0000000u;
                     uint32_t ver = 0;
                     int64_t  mt  = 0;
                     uint64_t sz  = 0;
@@ -159,10 +174,11 @@ void HdriBrowser::workerLoop()
                                    srcMtime.time_since_epoch().count()) &&
                         sz  == srcSize)
                     {
-                        ready.pixels.resize(
-                            static_cast<size_t>(THUMB_W) * THUMB_H * 4u);
+                        const size_t nElems =
+                            static_cast<size_t>(THUMB_W) * THUMB_H * 4u;
+                        ready.pixels.resize(nElems);
                         if (ifs.read(reinterpret_cast<char*>(ready.pixels.data()),
-                                     ready.pixels.size()))
+                                     nElems * sizeof(uint16_t)))
                         {
                             cacheHit = true;
                         }
@@ -214,14 +230,15 @@ void HdriBrowser::workerLoop()
                     if (ofs)
                     {
                         constexpr uint32_t kVersion =
-                            (static_cast<uint32_t>(THUMB_W) << 16) | THUMB_H;
+                            ((static_cast<uint32_t>(THUMB_W) << 16) | THUMB_H) | 0xC0000000u;
                         const int64_t mt = static_cast<int64_t>(
                                                srcMtime.time_since_epoch().count());
+                        const size_t byteCount = ready.pixels.size() * sizeof(uint16_t);
                         ofs.write(reinterpret_cast<const char*>(&kVersion), 4);
                         ofs.write(reinterpret_cast<const char*>(&mt),       8);
                         ofs.write(reinterpret_cast<const char*>(&srcSize),  8);
                         ofs.write(reinterpret_cast<const char*>(
-                                      ready.pixels.data()), ready.pixels.size());
+                                      ready.pixels.data()), byteCount);
                         ofs.close();
                         std::error_code ec;
                         std::filesystem::rename(tmpPath, cachePath, ec);
@@ -243,10 +260,13 @@ void HdriBrowser::workerLoop()
 
 // ─── Thumbnail generation ─────────────────────────────────────────────────────
 // Runs on a worker thread.  Box-filter downsample + log-average auto-exposure
-// + per-channel Reinhard tone-map + sRGB gamma encode → RGBA8.
+// → linear RGBA16F.  No tone-mapping: values above 1.0 are kept so that the
+// scRGB display pipeline can show highlights above paper-white on HDR monitors.
+// On SDR, values above 1.0 are clamped by the framebuffer write — acceptable
+// for a preview thumbnail.
 
 void HdriBrowser::generateThumbnail(const float* src, int srcW, int srcH,
-                                    uint8_t* dst, int dstW, int dstH)
+                                    uint16_t* dst, int dstW, int dstH)
 {
     // ── Log-average luminance for auto-exposure ───────────────────────────────
     double logSum = 0.0;
@@ -259,9 +279,9 @@ void HdriBrowser::generateThumbnail(const float* src, int srcW, int srcH,
         logSum += std::log(static_cast<double>(std::fmax(lum, 1e-4f)));
     }
     const float logAvgLum = static_cast<float>(std::exp(logSum / totalPx));
-    const float exposure   = 0.18f / logAvgLum;  // key = 0.18 (middle grey)
+    const float exposure   = 0.5f / logAvgLum;  // bring scene average to 0.5 linear
 
-    // ── Box-filter downsample ────────────────────────────────────────────────
+    // ── Box-filter downsample ─────────────────────────────────────────────────
     const float scaleX = static_cast<float>(srcW) / dstW;
     const float scaleY = static_cast<float>(srcH) / dstH;
 
@@ -290,21 +310,12 @@ void HdriBrowser::generateThumbnail(const float* src, int srcW, int srcH,
                 r /= n; g /= n; b /= n;
             }
 
-            // Per-channel Reinhard with auto-exposure
-            r = (r * exposure) / (1.0f + r * exposure);
-            g = (g * exposure) / (1.0f + g * exposure);
-            b = (b * exposure) / (1.0f + b * exposure);
-
-            // sRGB gamma encode
-            r = std::pow(std::fmax(r, 0.0f), 1.0f / 2.2f);
-            g = std::pow(std::fmax(g, 0.0f), 1.0f / 2.2f);
-            b = std::pow(std::fmax(b, 0.0f), 1.0f / 2.2f);
-
-            uint8_t* out = dst + (static_cast<size_t>(dy) * dstW + dx) * 4;
-            out[0] = static_cast<uint8_t>(std::clamp(r * 255.0f, 0.0f, 255.0f));
-            out[1] = static_cast<uint8_t>(std::clamp(g * 255.0f, 0.0f, 255.0f));
-            out[2] = static_cast<uint8_t>(std::clamp(b * 255.0f, 0.0f, 255.0f));
-            out[3] = 255u;
+            // Apply exposure; clamp negatives (EXR files may contain negative values).
+            uint16_t* out = dst + (static_cast<size_t>(dy) * dstW + dx) * 4;
+            out[0] = f32ToF16(std::fmax(r * exposure, 0.0f));
+            out[1] = f32ToF16(std::fmax(g * exposure, 0.0f));
+            out[2] = f32ToF16(std::fmax(b * exposure, 0.0f));
+            out[3] = f32ToF16(1.0f);
         }
     }
 }
