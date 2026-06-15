@@ -2,6 +2,7 @@ add_executable(OptixRaytracer
     main.cpp
     application.h
     application.cpp
+    gpu_buffer.h
     accel.h
     accel.cpp
     hdri_browser.h
@@ -85,4 +86,4 @@ target_compile_definitions(OptixRaytracer PRIVATE NOMINMAX)
 
 # Visual Studio source groups for cleaner Solution Explorer layout
 source_group("Source Files" FILES main.cpp application.cpp hdri_browser.cpp vulkan_context.cpp accel.cpp scene.cpp scene_loader.cpp texture.cpp)
-source_group("Header Files" FILES application.h hdri_browser.h vulkan_context.h accel.h camera.h matrix4x4.h node_3d.h scene.h scene_loader.h mesh.h texture.h)
+source_group("Header Files" FILES application.h gpu_buffer.h hdri_browser.h vulkan_context.h accel.h camera.h matrix4x4.h node_3d.h scene.h scene_loader.h mesh.h texture.h)

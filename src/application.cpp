@@ -75,71 +75,30 @@ Application::Application(int width, int height, const std::string& title,
     m_scene = std::make_unique<Scene>();
     buildSbt();  // empty SBT — no meshes yet
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_launchParamsBuffer),
-                           sizeof(LaunchParams)));
+    m_launchParamsBuffer.alloc(sizeof(LaunchParams));
     NFD_Init();
 }
 
 Application::~Application()
 {
-    if (d_colorBuffer) { cudaFree(d_colorBuffer); d_colorBuffer = nullptr; }
-    delete[] h_colorBuffer;
-
-    if (m_launchParamsBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_launchParamsBuffer));
-        m_launchParamsBuffer = 0;
-    }
-    if (m_sbtRaygenBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_sbtRaygenBuffer));
-        m_sbtRaygenBuffer = 0;
-    }
-    if (m_sbtMissBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_sbtMissBuffer));
-        m_sbtMissBuffer = 0;
-    }
-    if (m_sbtHitgroupBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_sbtHitgroupBuffer));
-        m_sbtHitgroupBuffer = 0;
-    }
+    // GPUBuffer members (m_colorBuffer, m_accumBuffer, SBT buffers, denoiser buffers,
+    // m_materialsBuffer, m_launchParamsBuffer) free themselves via their destructors.
+    // std::vector members (m_colorBufferHost, m_hdrBufferHost) do the same.
 
     // m_envMap destructor frees GPU resources automatically — no explicit call needed
-
-    if (m_accumBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_accumBuffer));
-        m_accumBuffer = 0;
-    }
-    if (m_materialsBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_materialsBuffer));
-        m_materialsBuffer = 0;
-    }
 
     if (m_scene)
     {
         m_scene->destroyAccel();  // free AS GPU memory before destroying OptiX context
     }
 
-    // ── Denoiser resources ────────────────────────────────────────────────────
     if (m_denoiser)
     {
         optixDenoiserDestroy(m_denoiser);
         m_denoiser = nullptr;
     }
-    if (m_denoiserIntensity) { cudaFree(reinterpret_cast<void*>(m_denoiserIntensity)); m_denoiserIntensity = 0; }
-    if (m_normalBuffer)      { cudaFree(reinterpret_cast<void*>(m_normalBuffer));      m_normalBuffer      = 0; }
-    if (m_albedoBuffer)      { cudaFree(reinterpret_cast<void*>(m_albedoBuffer));      m_albedoBuffer      = 0; }
-    if (m_hdrBuffer)         { cudaFree(reinterpret_cast<void*>(m_hdrBuffer));         m_hdrBuffer         = 0; }
-    if (m_denoisedBuffer)    { cudaFree(reinterpret_cast<void*>(m_denoisedBuffer));    m_denoisedBuffer    = 0; }
-    if (m_denoiserState)     { cudaFree(reinterpret_cast<void*>(m_denoiserState));     m_denoiserState     = 0; }
-    if (m_denoiserScratch)   { cudaFree(reinterpret_cast<void*>(m_denoiserScratch));   m_denoiserScratch   = 0; }
-    delete[] h_hdrBuffer;    h_hdrBuffer = nullptr;
 
-    if (m_pipeline)     { optixPipelineDestroy(m_pipeline);           m_pipeline     = nullptr; }
+    if (m_pipeline)     { optixPipelineDestroy(m_pipeline);          m_pipeline      = nullptr; }
     if (m_pgHitgroup)   { optixProgramGroupDestroy(m_pgHitgroup);    m_pgHitgroup    = nullptr; }
     if (m_pgMissShadow) { optixProgramGroupDestroy(m_pgMissShadow);  m_pgMissShadow  = nullptr; }
     if (m_pgMiss)       { optixProgramGroupDestroy(m_pgMiss);        m_pgMiss        = nullptr; }
@@ -284,7 +243,7 @@ void Application::initDenoiser()
         OPTIX_DENOISER_MODEL_KIND_HDR,
         &denoiserOpts,
         &m_denoiser));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_denoiserIntensity), sizeof(float)));
+    m_denoiserIntensity.alloc(sizeof(float));
 }
 
 // ─── SBT record types ────────────────────────────────────────────────────────
@@ -497,35 +456,23 @@ void Application::checkShaderHotReload()
 void Application::buildSbt()
 {
     // Free any previously allocated SBT device buffers
-    if (m_sbtRaygenBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_sbtRaygenBuffer));
-        m_sbtRaygenBuffer = 0;
-    }
-    if (m_sbtMissBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_sbtMissBuffer));
-        m_sbtMissBuffer = 0;
-    }
-    if (m_sbtHitgroupBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_sbtHitgroupBuffer));
-        m_sbtHitgroupBuffer = 0;
-    }
+    m_sbtRaygenBuffer.free();
+    m_sbtMissBuffer.free();
+    m_sbtHitgroupBuffer.free();
     m_sbt = {};
 
     // ── Raygen record ─────────────────────────────────────────────────────────
     RaygenRecord raygenRec = {};
     OPTIX_CHECK(optixSbtRecordPackHeader(m_pgRaygen, &raygenRec));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_sbtRaygenBuffer), sizeof(RaygenRecord)));
-    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(m_sbtRaygenBuffer), &raygenRec, sizeof(RaygenRecord), cudaMemcpyHostToDevice));
+    m_sbtRaygenBuffer.alloc(sizeof(RaygenRecord));
+    m_sbtRaygenBuffer.upload(&raygenRec, sizeof(RaygenRecord));
 
     // ── Miss records — index 0 = radiance, index 1 = NEE shadow ─────────────
     MissRecord missRecs[2] = {};
     OPTIX_CHECK(optixSbtRecordPackHeader(m_pgMiss,       &missRecs[0]));
     OPTIX_CHECK(optixSbtRecordPackHeader(m_pgMissShadow, &missRecs[1]));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_sbtMissBuffer), sizeof(missRecs)));
-    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(m_sbtMissBuffer), missRecs, sizeof(missRecs), cudaMemcpyHostToDevice));
+    m_sbtMissBuffer.alloc(sizeof(missRecs));
+    m_sbtMissBuffer.upload(missRecs, sizeof(missRecs));
 
     // ── Hit group records — one per TLAS instance ────────────────────────────
     // Walk the node tree in the same DFS order as buildTlasPhase so that
@@ -584,18 +531,18 @@ void Application::buildSbt()
     if (!hitRecs.empty())
     {
         const size_t hitByteSize = hitRecs.size() * sizeof(HitGroupRecord);
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_sbtHitgroupBuffer), hitByteSize));
-        CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(m_sbtHitgroupBuffer), hitRecs.data(), hitByteSize, cudaMemcpyHostToDevice));
+        m_sbtHitgroupBuffer.alloc(hitByteSize);
+        m_sbtHitgroupBuffer.upload(hitRecs.data(), hitByteSize);
     }
 
     // ── Fill the SBT descriptor ───────────────────────────────────────────────
-    m_sbt.raygenRecord                = m_sbtRaygenBuffer;
+    m_sbt.raygenRecord                = m_sbtRaygenBuffer.ptr();
 
-    m_sbt.missRecordBase              = m_sbtMissBuffer;
+    m_sbt.missRecordBase              = m_sbtMissBuffer.ptr();
     m_sbt.missRecordStrideInBytes     = sizeof(MissRecord);
     m_sbt.missRecordCount             = 2;  // [0]=radiance, [1]=shadow
 
-    m_sbt.hitgroupRecordBase          = m_sbtHitgroupBuffer;
+    m_sbt.hitgroupRecordBase          = m_sbtHitgroupBuffer.ptr();
     m_sbt.hitgroupRecordStrideInBytes = sizeof(HitGroupRecord);
     m_sbt.hitgroupRecordCount         = static_cast<unsigned int>(hitRecs.size());
 }
@@ -604,45 +551,27 @@ void Application::buildSbt()
 
 void Application::resizeFramebuffer(int w, int h)
 {
-    if (d_colorBuffer) { cudaFree(d_colorBuffer); d_colorBuffer = nullptr; }
-    delete[] h_colorBuffer;
-    h_colorBuffer = nullptr;
-
     m_vkCtx.waitIdle();
     m_vkCtx.destroyDisplayImage();
 
     m_viewportWidth  = w;
     m_viewportHeight = h;
 
-    const size_t pixelCount = static_cast<size_t>(w) * h;
+    const size_t pixelCount  = static_cast<size_t>(w) * h;
+    const size_t float4Bytes = pixelCount * sizeof(float4);
 
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_colorBuffer), pixelCount * sizeof(float4)));
-    h_colorBuffer = new float4[pixelCount];
+    m_colorBuffer.alloc(float4Bytes);
+    m_colorBufferHost.resize(pixelCount);
 
-    // Accumulation buffer: float4 per pixel (w component unused)
-    if (m_accumBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_accumBuffer));
-        m_accumBuffer = 0;
-    }
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_accumBuffer), pixelCount * sizeof(float4)));
+    m_accumBuffer.alloc(float4Bytes);
     m_accumDirty = true;
 
     // ── Denoiser guide + working buffers ──────────────────────────────────────
-    if (m_normalBuffer)    { cudaFree(reinterpret_cast<void*>(m_normalBuffer));    m_normalBuffer    = 0; }
-    if (m_albedoBuffer)    { cudaFree(reinterpret_cast<void*>(m_albedoBuffer));    m_albedoBuffer    = 0; }
-    if (m_hdrBuffer)       { cudaFree(reinterpret_cast<void*>(m_hdrBuffer));       m_hdrBuffer       = 0; }
-    if (m_denoisedBuffer)  { cudaFree(reinterpret_cast<void*>(m_denoisedBuffer));  m_denoisedBuffer  = 0; }
-    if (m_denoiserState)   { cudaFree(reinterpret_cast<void*>(m_denoiserState));   m_denoiserState   = 0; }
-    if (m_denoiserScratch) { cudaFree(reinterpret_cast<void*>(m_denoiserScratch)); m_denoiserScratch = 0; }
-    delete[] h_hdrBuffer;  h_hdrBuffer = nullptr;
-
-    const size_t float4Bytes = pixelCount * sizeof(float4);
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_normalBuffer),   float4Bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_albedoBuffer),   float4Bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_hdrBuffer),      float4Bytes));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_denoisedBuffer), float4Bytes));
-    h_hdrBuffer = new float4[pixelCount];
+    m_normalBuffer.alloc(float4Bytes);
+    m_albedoBuffer.alloc(float4Bytes);
+    m_hdrBuffer.alloc(float4Bytes);
+    m_denoisedBuffer.alloc(float4Bytes);
+    m_hdrBufferHost.resize(pixelCount);
 
     if (m_denoiser)
     {
@@ -652,18 +581,16 @@ void Application::resizeFramebuffer(int w, int h)
             static_cast<unsigned int>(w),
             static_cast<unsigned int>(h),
             &sizes));
-        m_denoiserStateSize   = sizes.stateSizeInBytes;
-        m_denoiserScratchSize = sizes.withoutOverlapScratchSizeInBytes;
 
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_denoiserState),   m_denoiserStateSize));
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_denoiserScratch), m_denoiserScratchSize));
+        m_denoiserState.alloc(sizes.stateSizeInBytes);
+        m_denoiserScratch.alloc(sizes.withoutOverlapScratchSizeInBytes);
 
         OPTIX_CHECK(optixDenoiserSetup(
             m_denoiser, nullptr,
             static_cast<unsigned int>(w),
             static_cast<unsigned int>(h),
-            m_denoiserState,   m_denoiserStateSize,
-            m_denoiserScratch, m_denoiserScratchSize));
+            m_denoiserState.ptr(),   m_denoiserState.size(),
+            m_denoiserScratch.ptr(), m_denoiserScratch.size()));
     }
 
     m_vkCtx.createDisplayImage(w, h);
@@ -726,19 +653,11 @@ void Application::uploadMaterials()
     const size_t matBytes = mats.size() * sizeof(MaterialData);
 
     // Reallocate if the buffer is absent or too small; otherwise reuse.
-    if (m_materialsBuffer && m_materialsBufferSize < matBytes)
+    if (m_materialsBuffer.size() < matBytes)
     {
-        cudaFree(reinterpret_cast<void*>(m_materialsBuffer));
-        m_materialsBuffer     = 0;
-        m_materialsBufferSize = 0;
+        m_materialsBuffer.alloc(matBytes);
     }
-    if (!m_materialsBuffer)
-    {
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&m_materialsBuffer), matBytes));
-        m_materialsBufferSize = matBytes;
-    }
-    CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(m_materialsBuffer),
-                           mats.data(), matBytes, cudaMemcpyHostToDevice));
+    m_materialsBuffer.upload(mats.data(), matBytes);
 }
 
 // ─── Scene loading ────────────────────────────────────────────────────────────
@@ -773,11 +692,7 @@ void Application::loadScene(const std::string& path)
     }
 
     // Upload materials to device so the closest-hit shader can look up properties.
-    if (m_materialsBuffer)
-    {
-        cudaFree(reinterpret_cast<void*>(m_materialsBuffer));
-        m_materialsBuffer = 0;
-    }
+    m_materialsBuffer.free();  // force realloc to match new material count
     uploadMaterials();
     m_scene->uploadTextures();  // upload glTF textures to GPU and build device array
 
@@ -1140,16 +1055,15 @@ bool Application::tick()
 
         // ── Update launch parameters ──────────────────────────────────────────
         // ── Reset accumulation buffer if anything changed ─────────────────────
-        if (m_accumDirty && m_accumBuffer)
+        if (m_accumDirty && m_accumBuffer.valid())
         {
-            CUDA_CHECK(cudaMemset(reinterpret_cast<void*>(m_accumBuffer), 0,
-                static_cast<size_t>(m_viewportWidth) * m_viewportHeight * sizeof(float4)));
+            m_accumBuffer.clear();
             m_sampleCount             = 0;
             m_accumDirty              = false;
             m_hasValidDenoisedFrame   = false;  // stale denoised frame is now invalid
         }
 
-        m_launchParams.colorBuffer = d_colorBuffer;
+        m_launchParams.colorBuffer = m_colorBuffer.typedPtr<float4>();
         m_launchParams.hdrDisplay  = m_vkCtx.isScRgbSwapchain()
                                          ? (m_hdrOutput ? 1 : 0)
                                          : 2;
@@ -1162,13 +1076,13 @@ bool Application::tick()
         m_launchParams.envConditionalCdf = m_envMap.cdfConditional ? reinterpret_cast<const float*>(m_envMap.cdfConditional) : nullptr;
         m_launchParams.envCdfW           = m_envMap.width;
         m_launchParams.envCdfH           = m_envMap.height;
-        m_launchParams.accumBuffer       = m_accumBuffer ? reinterpret_cast<float4*>(m_accumBuffer) : nullptr;
+        m_launchParams.accumBuffer       = m_accumBuffer.typedPtr<float4>();
         m_launchParams.sampleIndex       = m_sampleCount;
-        m_launchParams.materials         = m_materialsBuffer ? reinterpret_cast<const MaterialData*>(m_materialsBuffer) : nullptr;
+        m_launchParams.materials         = m_materialsBuffer.typedPtr<const MaterialData>();
         m_launchParams.sceneTextures     = m_scene->textureObjects();
-        m_launchParams.normalBuffer      = m_normalBuffer ? reinterpret_cast<float4*>(m_normalBuffer) : nullptr;
-        m_launchParams.albedoBuffer      = m_albedoBuffer ? reinterpret_cast<float4*>(m_albedoBuffer) : nullptr;
-        m_launchParams.hdrBuffer         = m_hdrBuffer    ? reinterpret_cast<float4*>(m_hdrBuffer)    : nullptr;
+        m_launchParams.normalBuffer      = m_normalBuffer.typedPtr<float4>();
+        m_launchParams.albedoBuffer      = m_albedoBuffer.typedPtr<float4>();
+        m_launchParams.hdrBuffer         = m_hdrBuffer.typedPtr<float4>();
 
         // Camera basis vectors derived from the scene camera each frame
         {
@@ -1209,14 +1123,11 @@ bool Application::tick()
         }
 
         // ── GPU launch ────────────────────────────────────────────────────────
-        CUDA_CHECK(cudaMemcpy(
-            reinterpret_cast<void*>(m_launchParamsBuffer),
-            &m_launchParams, sizeof(LaunchParams),
-            cudaMemcpyHostToDevice));
+        m_launchParamsBuffer.upload(&m_launchParams, sizeof(LaunchParams));
 
         OPTIX_CHECK(optixLaunch(
             m_pipeline, nullptr,
-            m_launchParamsBuffer, sizeof(LaunchParams),
+            m_launchParamsBuffer.ptr(), sizeof(LaunchParams),
             &m_sbt,
             static_cast<unsigned int>(m_viewportWidth),
             static_cast<unsigned int>(m_viewportHeight),
@@ -1228,8 +1139,8 @@ bool Application::tick()
         // ── Denoiser post-process ─────────────────────────────────────────────
         const bool runDenoiser = m_denoiserEnabled
                               && m_denoiser
-                              && m_hdrBuffer
-                              && m_denoiserState
+                              && m_hdrBuffer.valid()
+                              && m_denoiserState.valid()
                               && m_denoiserInterval > 0
                               && (m_sampleCount % m_denoiserInterval == 0 || m_sampleCount == 25);
         if (runDenoiser)
@@ -1247,49 +1158,46 @@ bool Application::tick()
             };
 
             OptixDenoiserLayer layer = {};
-            layer.input              = makeImage(m_hdrBuffer);
-            layer.output             = makeImage(m_denoisedBuffer);
+            layer.input              = makeImage(m_hdrBuffer.ptr());
+            layer.output             = makeImage(m_denoisedBuffer.ptr());
 
             OptixDenoiserGuideLayer guide = {};
-            guide.normal                  = makeImage(m_normalBuffer);
-            guide.albedo                  = makeImage(m_albedoBuffer);
+            guide.normal                  = makeImage(m_normalBuffer.ptr());
+            guide.albedo                  = makeImage(m_albedoBuffer.ptr());
 
             OPTIX_CHECK(optixDenoiserComputeIntensity(
                 m_denoiser, nullptr,
                 &layer.input,
-                m_denoiserIntensity,
-                m_denoiserScratch, m_denoiserScratchSize));
+                m_denoiserIntensity.ptr(),
+                m_denoiserScratch.ptr(), m_denoiserScratch.size()));
 
             OptixDenoiserParams denoiserParams = {};
-            denoiserParams.hdrIntensity        = m_denoiserIntensity;
+            denoiserParams.hdrIntensity        = m_denoiserIntensity.ptr();
             denoiserParams.blendFactor         = 0.0f;
 
             OPTIX_CHECK(optixDenoiserInvoke(
                 m_denoiser, nullptr,
                 &denoiserParams,
-                m_denoiserState,   m_denoiserStateSize,
+                m_denoiserState.ptr(),   m_denoiserState.size(),
                 &guide,
                 &layer, 1,
                 0, 0,
-                m_denoiserScratch, m_denoiserScratchSize));
+                m_denoiserScratch.ptr(), m_denoiserScratch.size()));
 
             CUDA_CHECK(cudaDeviceSynchronize());
 
-            // Copy denoised float4 to host and CPU-tone-map into h_colorBuffer
+            // Copy denoised float4 to host and CPU-tone-map into m_colorBufferHost
             const size_t pixelCount = static_cast<size_t>(m_viewportWidth) * m_viewportHeight;
-            CUDA_CHECK(cudaMemcpy(h_hdrBuffer,
-                reinterpret_cast<void*>(m_denoisedBuffer),
-                pixelCount * sizeof(float4),
-                cudaMemcpyDeviceToHost));
+            m_denoisedBuffer.download(m_hdrBufferHost.data(), pixelCount * sizeof(float4));
 
             // Mirror the raygen encode (hdrDisplay modes 0/1/2).
-            const bool scRgb    = m_vkCtx.isScRgbSwapchain();
+            const bool scRgb      = m_vkCtx.isScRgbSwapchain();
             const bool applyGamma = !scRgb;
             for (size_t i = 0; i < pixelCount; ++i)
             {
-                float r = h_hdrBuffer[i].x;
-                float g = h_hdrBuffer[i].y;
-                float b = h_hdrBuffer[i].z;
+                float r = m_hdrBufferHost[i].x;
+                float g = m_hdrBufferHost[i].y;
+                float b = m_hdrBufferHost[i].z;
                 if (!m_hdrOutput || !scRgb)
                 {
                     r = r / (r + 1.0f);
@@ -1302,7 +1210,7 @@ bool Application::tick()
                         b = std::pow(b, 1.0f / 2.2f);
                     }
                 }
-                h_colorBuffer[i] = make_float4(r, g, b, 1.0f);
+                m_colorBufferHost[i] = make_float4(r, g, b, 1.0f);
             }
             m_hasValidDenoisedFrame = true;
         }
@@ -1313,20 +1221,17 @@ bool Application::tick()
             //  • denoiser is on but hasn't fired yet since the last accum reset
             //    (e.g. camera just moved) — keeps the viewport responsive.
             const size_t pixelCount = static_cast<size_t>(m_viewportWidth) * m_viewportHeight;
-            CUDA_CHECK(cudaMemcpy(
-                h_colorBuffer, d_colorBuffer,
-                pixelCount * sizeof(float4),
-                cudaMemcpyDeviceToHost));
+            m_colorBuffer.download(m_colorBufferHost.data(), pixelCount * sizeof(float4));
         }
         // else: denoiser enabled, valid denoised frame exists, but interval not reached —
         //        the host colour buffer already holds the last denoised result; leave it untouched.
 
         // Copy rendered pixels into the persistently-mapped staging buffer.
         // The GPU reads from this in the transfer pass recorded later this frame.
-        if (m_vkCtx.displayStagingPtr() && h_colorBuffer)
+        if (m_vkCtx.displayStagingPtr() && !m_colorBufferHost.empty())
         {
             const size_t pixelCount = static_cast<size_t>(m_viewportWidth) * m_viewportHeight;
-            std::memcpy(m_vkCtx.displayStagingPtr(), h_colorBuffer, pixelCount * sizeof(float4));
+            std::memcpy(m_vkCtx.displayStagingPtr(), m_colorBufferHost.data(), pixelCount * sizeof(float4));
         }
 
         const ImVec2 imageScreenPos = ImGui::GetCursorScreenPos();
@@ -2293,7 +2198,7 @@ bool Application::tick()
         return true;  // swapchain was out of date; rebuilt, skip this frame
     }
 
-    m_vkCtx.uploadDisplayImage(frame.cmd, h_colorBuffer,
+    m_vkCtx.uploadDisplayImage(frame.cmd, m_colorBufferHost.data(),
                                m_viewportWidth, m_viewportHeight);
     m_vkCtx.beginRenderPass(frame.cmd);
     // On an scRGB swapchain uiPipeline() overrides the stock ImGui pipeline

@@ -8,6 +8,7 @@
 #include <GLFW/glfw3.h>
 
 #include "accel.h"
+#include "gpu_buffer.h"
 #include "hdri_browser.h"
 #include "launch_params.h"
 #include "scene.h"
@@ -46,10 +47,10 @@ private:
     std::unique_ptr<Scene> m_scene;  // owns geometry, materials, nodes, and the Accel
 
     // Framebuffer — CUDA device/host buffers for the rendered image (linear float4, scRGB).
-    float4*      d_colorBuffer   = nullptr;  // CUDA device buffer
-    float4*      h_colorBuffer   = nullptr;  // host staging buffer
-    int          m_viewportWidth  = 0;       // current framebuffer dimensions
-    int          m_viewportHeight = 0;       // driven by the Viewport panel size
+    GPUBuffer           m_colorBuffer;                  // CUDA device buffer
+    std::vector<float4> m_colorBufferHost;              // host staging buffer
+    int                 m_viewportWidth  = 0;           // current framebuffer dimensions
+    int                 m_viewportHeight = 0;           // driven by the Viewport panel size
 
     // HDR display output — pure shader switch: when off the raygen tone-maps
     // to the SDR range (Reinhard), when on it passes radiance through unclamped.
@@ -98,39 +99,36 @@ private:
     OptixPipeline     m_pipeline      = nullptr;
 
     // Shader binding table
-    CUdeviceptr             m_sbtRaygenBuffer   = 0;
-    CUdeviceptr             m_sbtMissBuffer     = 0;
-    CUdeviceptr             m_sbtHitgroupBuffer = 0;
-    OptixShaderBindingTable m_sbt               = {};
+    GPUBuffer               m_sbtRaygenBuffer;
+    GPUBuffer               m_sbtMissBuffer;
+    GPUBuffer               m_sbtHitgroupBuffer;
+    OptixShaderBindingTable m_sbt = {};
 
     // Scene materials on device
-    CUdeviceptr m_materialsBuffer     = 0;
-    size_t      m_materialsBufferSize = 0;  // bytes currently allocated
+    GPUBuffer m_materialsBuffer;
 
     // Sample accumulation
-    CUdeviceptr m_accumBuffer  = 0;
-    uint32_t    m_sampleCount  = 0;
-    bool        m_accumDirty   = true;
+    GPUBuffer m_accumBuffer;
+    uint32_t  m_sampleCount = 0;
+    bool      m_accumDirty  = true;
 
     // OptiX AI denoiser
-    OptixDenoiser m_denoiser            = nullptr;
-    CUdeviceptr   m_denoiserState       = 0;
-    size_t        m_denoiserStateSize   = 0;
-    CUdeviceptr   m_denoiserScratch     = 0;
-    size_t        m_denoiserScratchSize = 0;
-    CUdeviceptr   m_denoiserIntensity   = 0;
-    CUdeviceptr   m_normalBuffer        = 0;
-    CUdeviceptr   m_albedoBuffer        = 0;
-    CUdeviceptr   m_hdrBuffer           = 0;
-    CUdeviceptr   m_denoisedBuffer      = 0;
-    float4*       h_hdrBuffer           = nullptr;
-    bool          m_denoiserEnabled         = false;
-    int           m_denoiserInterval        = 50;
-    bool          m_hasValidDenoisedFrame   = false;
+    OptixDenoiser       m_denoiser          = nullptr;
+    GPUBuffer           m_denoiserState;
+    GPUBuffer           m_denoiserScratch;
+    GPUBuffer           m_denoiserIntensity;
+    GPUBuffer           m_normalBuffer;
+    GPUBuffer           m_albedoBuffer;
+    GPUBuffer           m_hdrBuffer;
+    GPUBuffer           m_denoisedBuffer;
+    std::vector<float4> m_hdrBufferHost;
+    bool                m_denoiserEnabled       = false;
+    int                 m_denoiserInterval      = 50;
+    bool                m_hasValidDenoisedFrame = false;
 
     // Launch parameters
     LaunchParams m_launchParams       = {};
-    CUdeviceptr  m_launchParamsBuffer = 0;
+    GPUBuffer    m_launchParamsBuffer;
 
     std::string m_sceneFilePath;
     std::string m_loadError;

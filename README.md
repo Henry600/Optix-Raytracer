@@ -16,8 +16,8 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 - **Environment lighting** — equirectangular EXR maps (`.exr`, all codecs: NONE / RLE / ZIP / PIZ / PXR24 / B44 / DWAA / DWAB) or Radiance HDR maps (`.hdr`) or procedural sky gradient, with rotation and exposure (EV) controls; NaN and inf pixels are clamped at load time (NaN → 0, inf → 65504) so over-bright sources never corrupt thumbnails or the CDF
 - **HDRI importance sampling** — 2D luminance CDF built at load time; NEE fires shadow rays toward bright env-map regions at every diffuse and specular (GGX) bounce; MIS power heuristic with the GGX VNDF PDF prevents double-counting on specular escape paths
 - **Thin-lens depth of field** — focal length, sensor size, f-stop, focus distance, and adjustable bokeh edge bias
-- **scRGB FP16 swapchain** (`VK_FORMAT_R16G16B16A16_SFLOAT`) for the display output — the framebuffer always contains linear HDR radiance; requires `VK_EXT_swapchain_colorspace` (available on all modern drivers)
-- **HDR output toggle** — when off, Reinhard tone-maps the accumulated radiance into the SDR range; when on, radiance is passed through unclamped so highlights exceed paper white on an HDR display
+- **scRGB FP16 swapchain with automatic SDR fallback** — on Windows with HDR enabled, presents through `VK_FORMAT_R16G16B16A16_SFLOAT` + `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`; on displays without HDR, automatically falls back to `VK_FORMAT_B8G8R8A8_UNORM` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` with Reinhard tone-mapping and gamma encoding; no configuration required
+- **HDR output toggle** — available on HDR displays (scRGB swapchain active); when off, Reinhard tone-maps accumulated radiance into SDR range; when on, radiance passes through unclamped so highlights can exceed paper white; automatically disabled with a *(no HDR display)* label on SDR displays
 - **OptiX AI denoiser** — normal + albedo guide layers, configurable denoise interval, keeps the last denoised frame while accumulating
 
 ### Scene
@@ -198,6 +198,8 @@ Optix-Raytracer/
 └── src/
     ├── main.cpp                    Entry point
     ├── application.h/.cpp          CUDA/OptiX init, ImGui UI, per-frame render loop
+    ├── gpu_buffer.h                RAII CUDA device allocation (GPUBuffer): alloc / free /
+    │                               upload / download / clear; non-copyable, movable
     ├── vulkan_context.h/.cpp       Vulkan device, swapchain, render pass, display image,
     │                               and per-frame present logic
     ├── hdri_browser.h/.cpp         Async HDRI/EXR thumbnail browser panel — worker thread
@@ -251,8 +253,8 @@ Install Vulkan headers and the ICD loader: `sudo pacman -S vulkan-icd-loader vul
 **`Vulkan SDK not found` during configure (Windows)**  
 Install the [Vulkan SDK](https://vulkan.lunarg.com/) and ensure the `VULKAN_SDK` environment variable is set (the installer does this automatically). Re-run `configure.bat` after installation.
 
-**`scRGB FP16 surface format not available`** on startup  
-The Vulkan driver does not expose `VK_FORMAT_R16G16B16A16_SFLOAT` + `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`. Update your GPU driver to the latest version; this format has been available on all NVIDIA drivers for several years.
+**HDR Output checkbox is greyed out**  
+The scRGB swapchain was not selected — either Windows HDR is disabled for the active display, or the GPU driver does not expose `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`. Enable HDR in **Windows Settings → System → Display → HDR** and restart the app. The renderer falls back to BGRA8 + SDR tone-mapping automatically; no action is needed if HDR is not required.
 
 **Black Viewport on startup**  
 The Vulkan validation layer may be printing errors to stderr. Run from a terminal to see them. Common causes: outdated driver (update to ≥ 570.x) or missing Vulkan instance extensions from GLFW.
