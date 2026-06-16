@@ -55,7 +55,7 @@ private:
     // HDR display output — pure shader switch: when off the raygen tone-maps
     // to the SDR range (Reinhard), when on it passes radiance through unclamped.
     bool  m_hdrOutput      = false;
-    float m_paperWhiteNits = 250.0f;  // UI + image brightness (scRGB: 1.0 = 80 nits)
+    float m_paperWhiteNits = 80.0f;  // UI + image brightness (scRGB: 1.0 = 80 nits)
 
     // Vulkan presentation context (owns swapchain, render pass, display image, etc.)
     VulkanContext m_vkCtx;
