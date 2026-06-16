@@ -54,7 +54,16 @@ public:
     const std::vector<std::unique_ptr<Node3D>>& nodes()     const;
     const std::vector<int>&                     rootNodes() const;
 
-    // Accumulate transforms from the root down to nodeIdx (world = parent × … × local).
+    // Recompute worldTransform for nodeIdx and every descendant.
+    // Call after any localTransform change on a node in the hierarchy.
+    void updateWorldTransforms(int nodeIdx);
+
+    // Rebuild worldTransform for every node in the scene (all roots and their subtrees).
+    // Call once after scene load and after any operation that may affect multiple nodes.
+    void updateAllWorldTransforms();
+
+    // Walk the ancestor chain and return the accumulated world transform on demand.
+    // Prefer node.worldTransform for hot paths; this is kept for internal use during load.
     Matrix4x4 computeWorldTransform(int nodeIdx) const;
 
     // ── Acceleration structure ────────────────────────────────────────────────

@@ -78,10 +78,29 @@ void Application::drawNodePropertiesPanel()
             {
                 ImGuizmo::RecomposeMatrixFromComponents(translation, rotation, scale, colMajor);
                 node.localTransform = mat4FromColMajor(colMajor);
+                m_scene->updateWorldTransforms(m_selectedNodeIdx);
                 m_scene->rebuildTlas(m_optixContext);
                 m_accumDirty = true;
                 syncFlyCameraFromNode(m_selectedNodeIdx);
             }
+        }
+
+        // ── World transform — read-only display ───────────────────────────────
+        if (ImGui::CollapsingHeader("World Transform"))
+        {
+            float wColMajor[16];
+            mat4ToColMajor(node.worldTransform, wColMajor);
+
+            float wTranslation[3], wRotation[3], wScale[3];
+            ImGuizmo::DecomposeMatrixToComponents(wColMajor, wTranslation, wRotation, wScale);
+
+            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.75f);
+            ImGui::BeginDisabled();
+            ImGui::DragFloat3("Translation##world", wTranslation, 0.0f);
+            ImGui::DragFloat3("Rotation##world",    wRotation,    0.0f, 0.0f, 0.0f, "%.2f deg");
+            ImGui::DragFloat3("Scale##world",       wScale,       0.0f);
+            ImGui::EndDisabled();
+            ImGui::PopItemWidth();
         }
 
         // ── Type-specific content ─────────────────────────────────────────────

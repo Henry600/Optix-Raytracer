@@ -80,6 +80,7 @@ void Application::drawSceneGraphPanel()
                 implNode->localTransform = mat4Identity();
                 const int idx = m_scene->addNode(std::move(implNode));
                 m_scene->addRootNode(idx);
+                m_scene->updateWorldTransforms(idx);
                 try
                 {
                     m_scene->buildAccel(m_optixContext);

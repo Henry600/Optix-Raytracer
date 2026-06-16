@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "implicit_node.h"
 #include "matrix4x4.h"
 
 #include <algorithm>
@@ -29,6 +30,7 @@ void Scene::addDefaultCameraNode()
     camNode->localTransform = m_camera.transform;  // root node: local == world
     m_defaultCameraNodeIdx  = addNode(std::move(camNode));
     addRootNode(m_defaultCameraNodeIdx);
+    updateWorldTransforms(m_defaultCameraNodeIdx);
 }
 
 int Scene::addMesh(Mesh mesh)
@@ -141,6 +143,13 @@ static int duplicateSubtreeImpl(Scene& scene, int srcIdx, int newParentIdx)
         m->materialIndices  = mn->materialIndices;  // copy per-instance material assignments
         copy                = std::move(m);
     }
+    else if (const auto* in = dynamic_cast<const ImplicitNode*>(&src))
+    {
+        auto m              = std::make_unique<ImplicitNode>();
+        m->type             = in->type;
+        m->materialIndex    = in->materialIndex;
+        copy                = std::move(m);
+    }
     else if (dynamic_cast<const CameraNode*>(&src))
     {
         copy = std::make_unique<CameraNode>();
@@ -180,7 +189,9 @@ static int duplicateSubtreeImpl(Scene& scene, int srcIdx, int newParentIdx)
 int Scene::duplicateSubtree(int nodeIdx)
 {
     const int parentIdx = m_nodes[nodeIdx]->parent;
-    return duplicateSubtreeImpl(*this, nodeIdx, parentIdx);
+    const int newIdx    = duplicateSubtreeImpl(*this, nodeIdx, parentIdx);
+    updateWorldTransforms(newIdx);
+    return newIdx;
 }
 
 Node3D& Scene::nodeAt(int index)
@@ -293,6 +304,26 @@ Accel::MeshDevicePtrs Scene::meshDevicePtrs(size_t meshIdx) const
 }
 
 // ─── Node transforms ──────────────────────────────────────────────────────────
+
+void Scene::updateWorldTransforms(int nodeIdx)
+{
+    Node3D& node = *m_nodes[nodeIdx];
+    node.worldTransform = (node.parent >= 0)
+        ? mat4Multiply(m_nodes[node.parent]->worldTransform, node.localTransform)
+        : node.localTransform;
+    for (int childIdx : node.children)
+    {
+        updateWorldTransforms(childIdx);
+    }
+}
+
+void Scene::updateAllWorldTransforms()
+{
+    for (int rootIdx : m_rootNodes)
+    {
+        updateWorldTransforms(rootIdx);
+    }
+}
 
 Matrix4x4 Scene::computeWorldTransform(int nodeIdx) const
 {

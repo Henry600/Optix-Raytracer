@@ -265,11 +265,10 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
         inst.transform[10] = w.m[2][2];  inst.transform[11] = w.m[2][3];
     };
 
-    std::function<void(int, const Matrix4x4&)> walkNode =
-        [&](int nodeIdx, const Matrix4x4& parentWorld)
+    std::function<void(int)> walkNode = [&](int nodeIdx)
     {
-        const Node3D& node    = *allNodes[nodeIdx];
-        const Matrix4x4 world = mat4Multiply(parentWorld, node.localTransform);
+        const Node3D&    node  = *allNodes[nodeIdx];
+        const Matrix4x4& world = node.worldTransform;
 
         if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
         {
@@ -305,14 +304,13 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
 
         for (int childIdx : node.children)
         {
-            walkNode(childIdx, world);
+            walkNode(childIdx);
         }
     };
 
-    const Matrix4x4 identity = mat4Identity();
     for (int rootIdx : scene.rootNodes())
     {
-        walkNode(rootIdx, identity);
+        walkNode(rootIdx);
     }
 
     if (instances.empty())

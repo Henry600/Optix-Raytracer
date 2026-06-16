@@ -14,9 +14,10 @@ class Node3D
 {
 public:
     std::string      name;
-    Matrix4x4        localTransform;  // node-to-parent space
-    int              parent   = -1;   // index in Scene::m_nodes; -1 = root
-    std::vector<int> children;        // indices in Scene::m_nodes
+    Matrix4x4        localTransform;   // node-to-parent space; edit this to move the node
+    Matrix4x4        worldTransform;   // read-only: maintained by Scene::updateWorldTransforms
+    int              parent   = -1;    // index in Scene::m_nodes; -1 = root
+    std::vector<int> children;         // indices in Scene::m_nodes
 
     virtual ~Node3D() = default;
 

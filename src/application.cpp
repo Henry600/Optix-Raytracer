@@ -694,6 +694,7 @@ void Application::loadScene(const std::string& path)
 
         if (!m_scene->empty())
         {
+            m_scene->updateAllWorldTransforms();
             try
             {
                 m_scene->buildAccel(m_optixContext);
@@ -1306,6 +1307,7 @@ bool Application::tick()
                     node.localTransform = newWorldTx;
                 }
 
+                m_scene->updateWorldTransforms(m_selectedNodeIdx);
                 m_scene->rebuildTlas(m_optixContext);
                 m_accumDirty = true;
                 syncFlyCameraFromNode(m_selectedNodeIdx);
