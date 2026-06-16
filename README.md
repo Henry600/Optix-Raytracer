@@ -38,7 +38,7 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 | **Viewport** | Live rendered image, resizes dynamically |
 | **Raytracer** | GPU stats, sample count, denoiser toggle, environment controls, HDR output toggle, paper-white slider (active when Windows HDR is on) |
 | **Resources** | Collapsible sub-categories: **Materials** (per-material PBR editor with albedo swatch preview) and **Textures** (loaded scene textures with dimensions and format) |
-| **Scene Graph** | Hierarchy tree of all scene nodes (click to select, right-click for **Duplicate** / **Delete**); **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
+| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
 | **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
 
@@ -95,7 +95,7 @@ source ~/.bashrc
 # or: export OptiX_INSTALL_DIR=~/NVIDIA-OptiX-SDK-9.1.0
 ```
 
-On first run, CMake fetches GLFW, ImGui, ImGuizmo, tinygltf, Imath, OpenEXR, and nativefiledialog-extended from GitHub — internet access is required.
+On first run, CMake fetches GLFW, ImGui, ImGuizmo, tinygltf, Imath, OpenEXR, nativefiledialog-extended, and the **FontAwesome 6 Free Solid** font (`fa-solid-900.ttf`) from GitHub — internet access is required. The font is downloaded once into `fonts/` (gitignored) and copied next to the executable at build time.
 
 **Run:**
 ```bash
@@ -183,6 +183,7 @@ Optix-Raytracer/
 ├── build.bat / configure.bat       Windows build scripts
 ├── imgui.ini                       Versioned default Dear ImGui window layout
 ├── app.PNG                         Application screenshot
+├── fonts/                          Downloaded at configure time (gitignored): fa-solid-900.ttf
 ├── cmake/
 │   ├── FindOptiX.cmake             Locates the OptiX SDK; creates the OptiX::OptiX target
 │   ├── cuda_intellisense.props.in  VS property sheet: adds OptiX to IntelliSense
@@ -213,6 +214,7 @@ Optix-Raytracer/
     │                               load order, log-average auto-exposure, box-filter downsample
     │                               → linear RGBA16F (no tone-mapping; HDR highlights preserved),
     │                               recursive folder scan
+    ├── icons.h                     FontAwesome 6 glyph macros (ICON_FA_*) for scene-graph icons
     ├── matrix4x4.h                 Row-major Matrix4x4 with multiply, inverse, and
     │                               column-major converters for ImGuizmo interop
     ├── camera.h                    Camera struct: transform, FOV, DoF parameters

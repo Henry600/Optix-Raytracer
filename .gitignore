@@ -20,6 +20,9 @@ mono_crash.*
 build/
 CMakeUserPresets.json
 
+# Downloaded third-party assets (fetched at CMake configure time)
+fonts/
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

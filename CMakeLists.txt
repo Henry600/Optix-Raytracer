@@ -164,6 +164,27 @@ FetchContent_Declare(nfd
 )
 FetchContent_MakeAvailable(nfd)
 
+# FontAwesome 6 Free Solid — icon glyphs merged into the ImGui font atlas.
+# Downloaded once at configure time into fonts/; copied to the executable
+# directory at build time (see src/CMakeLists.txt).
+set(FA_FONT_DIR  "${CMAKE_SOURCE_DIR}/fonts")
+set(FA_FONT_PATH "${FA_FONT_DIR}/fa-solid-900.ttf")
+if(NOT EXISTS "${FA_FONT_PATH}")
+    message(STATUS "Downloading fa-solid-900.ttf (FontAwesome 6.7.2)")
+    file(MAKE_DIRECTORY "${FA_FONT_DIR}")
+    file(DOWNLOAD
+        "https://github.com/FortAwesome/Font-Awesome/raw/6.7.2/webfonts/fa-solid-900.ttf"
+        "${FA_FONT_PATH}"
+        STATUS _fa_status
+        TLS_VERIFY ON
+    )
+    list(GET _fa_status 0 _fa_result)
+    if(NOT _fa_result EQUAL 0)
+        message(WARNING "FontAwesome download failed — scene-graph icons will not appear")
+        file(REMOVE "${FA_FONT_PATH}")
+    endif()
+endif()
+
 # ── Project subdirectories ────────────────────────────────────────────────────
 add_subdirectory(shaders)   # device_programs OBJECT library (PTX)
 add_subdirectory(src)       # OptixRaytracer executable

@@ -14,6 +14,7 @@ add_executable(OptixRaytracer
     vulkan_context.h
     vulkan_context.cpp
     camera.h
+    icons.h
     matrix4x4.h
     node_3d.h
     implicit_node.h
@@ -91,4 +92,21 @@ target_compile_definitions(OptixRaytracer PRIVATE NOMINMAX)
 
 # Visual Studio source groups for cleaner Solution Explorer layout
 source_group("Source Files" FILES main.cpp application.cpp ui_raytracer_panel.cpp ui_resources_panel.cpp ui_scene_graph_panel.cpp ui_node_properties_panel.cpp hdri_browser.cpp vulkan_context.cpp accel.cpp scene.cpp scene_loader.cpp texture.cpp)
-source_group("Header Files" FILES application.h gpu_buffer.h hdri_browser.h vulkan_context.h accel.h camera.h matrix4x4.h node_3d.h implicit_node.h scene.h scene_loader.h mesh.h texture.h)
+source_group("Header Files" FILES application.h gpu_buffer.h hdri_browser.h vulkan_context.h accel.h camera.h icons.h matrix4x4.h node_3d.h implicit_node.h scene.h scene_loader.h mesh.h texture.h)
+
+# Copy FontAwesome font to all output directories so the application can load
+# it at runtime via the relative path "fonts/fa-solid-900.ttf".
+set(FA_FONT_SRC "${CMAKE_SOURCE_DIR}/fonts/fa-solid-900.ttf")
+if(EXISTS "${FA_FONT_SRC}")
+    add_custom_command(TARGET OptixRaytracer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:OptixRaytracer>/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FA_FONT_SRC}"
+                "$<TARGET_FILE_DIR:OptixRaytracer>/fonts/fa-solid-900.ttf"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/src/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${FA_FONT_SRC}"
+                "${CMAKE_BINARY_DIR}/src/fonts/fa-solid-900.ttf"
+        COMMENT "Copying FontAwesome font to output directories"
+    )
+endif()

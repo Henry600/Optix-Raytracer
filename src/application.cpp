@@ -196,6 +196,34 @@ void Application::initImGui()
     // actually active on the display; when HDR is off DWM maps scRGB 1.0 →
     // display-white, so applying the paper-white multiplier would inflate mid-
     // tones (e.g., sRGB 0.5 → 68% brightness instead of the correct 21.7%).
+    // Load fonts before initImGui() so the Vulkan backend uploads the atlas
+    // on its first NewFrame call.  AddFontDefault must be called first so that
+    // the FA glyphs merge INTO the default ProggyClean font (not replacing it).
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.Fonts->AddFontDefault();
+        if (std::filesystem::exists("fonts/fa-solid-900.ttf"))
+        {
+            // Restrict to the exact codepoints used in icons.h — avoids
+            // rasterising the full FA glyph set (~1 000 glyphs).
+            static const ImWchar icon_ranges[] = {
+                0xF030, 0xF030,  // fa-camera
+                0xF0C8, 0xF0C8,  // fa-square
+                0xF111, 0xF111,  // fa-circle
+                0xF1B2, 0xF1B2,  // fa-cube
+                0xF1C0, 0xF1C0,  // fa-database
+                0xF5FD, 0xF5FD,  // fa-layer-group
+                0
+            };
+            ImFontConfig cfg;
+            cfg.MergeMode        = true;
+            cfg.PixelSnapH       = true;
+            cfg.GlyphMinAdvanceX = 13.0f;
+            io.Fonts->AddFontFromFileTTF(
+                "fonts/fa-solid-900.ttf", 13.0f, &cfg, icon_ranges);
+        }
+    }
+
     m_vkCtx.setUiScale(m_vkCtx.isScRgbSwapchain() ? (m_paperWhiteNits / 80.0f) : 1.0f);
 
     m_vkCtx.initImGui(m_window, m_vkCtx.swapchainImageCount());
