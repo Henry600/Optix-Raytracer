@@ -11,7 +11,7 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 ### Rendering
 - **Monte Carlo path tracing** with up to 16 bounces and per-pixel progressive accumulation
 - **PBR materials** (GGX-VNDF microfacet BRDF) — albedo, roughness, metallic, clearcoat, clearcoat roughness, emission, transmission, IOR, and absorption distance; sRGB albedo textures and colour values are linearised before lighting calculations
-- **Probabilistic lobe selection** — clearcoat → specular → diffuse/refraction, each weighted by Fresnel probability for energy conservation
+- **Probabilistic lobe selection** — clearcoat → specular → diffuse/refraction, each weighted by Fresnel probability for energy conservation; lobe selection uses the exact dielectric Fresnel equation (not Schlick) so IOR = 1 materials are correctly invisible at all angles
 - **Stochastic refraction** — rough dielectric transmission with Snell's law and GGX microfacet normal sampling; Beer-Lambert volumetric absorption for coloured glass (absorption accumulates over distance, not at the surface); **nested dielectrics** — a per-path medium stack tracks the enclosing material IOR and absorption so overlapping or nested glass objects refract and attenuate correctly; **thin-walled glass** mode skips volume absorption and tints NEE shadow rays with the glass colour for correct single-surface light filtering
 - **Environment lighting** — equirectangular EXR maps (`.exr`, all codecs: NONE / RLE / ZIP / PIZ / PXR24 / B44 / DWAA / DWAB) or Radiance HDR maps (`.hdr`) or procedural sky gradient, with rotation and exposure (EV) controls; NaN and inf pixels are clamped at load time (NaN → 0, inf → 65504) so over-bright sources never corrupt thumbnails or the CDF
 - **HDRI importance sampling** — 2D luminance CDF built at load time; NEE fires shadow rays toward bright env-map regions at every diffuse and specular (GGX) bounce; MIS power heuristic with the GGX VNDF PDF prevents double-counting on specular escape paths
@@ -38,8 +38,8 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 | **Viewport** | Live rendered image, resizes dynamically |
 | **Raytracer** | GPU stats, sample count, denoiser toggle, environment controls, HDR output toggle, paper-white slider (active when Windows HDR is on) |
 | **Resources** | Collapsible sub-categories: **Materials** (per-material PBR editor with albedo swatch preview) and **Textures** (loaded scene textures with dimensions and format) |
-| **Scene Graph** | Hierarchy tree of all scene nodes (click to select); **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
-| **Node Properties** | Gizmo operation / space selector, TRS sliders, raw transform matrix, material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
+| **Scene Graph** | Hierarchy tree of all scene nodes (click to select, right-click for **Duplicate** / **Delete**); **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
+| **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
 
 ### Performance
@@ -216,9 +216,9 @@ Optix-Raytracer/
     ├── matrix4x4.h                 Row-major Matrix4x4 with multiply, inverse, and
     │                               column-major converters for ImGuizmo interop
     ├── camera.h                    Camera struct: transform, FOV, DoF parameters
-    ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode
+    ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode; each node carries a cached worldTransform (maintained by Scene)
     ├── implicit_node.h             ImplicitNode (Sphere / Box / Cylinder) with shape type enum and material index
-    ├── scene.h/.cpp                Scene container: meshes, materials, textures, node tree
+    ├── scene.h/.cpp                Scene container: meshes, materials, textures, node tree; updateWorldTransforms / updateAllWorldTransforms keep cached world matrices in sync; deleteSubtree removes a node and its descendants
     ├── mesh.h                      Host-side mesh: separate vertex attribute arrays
     ├── texture.h/.cpp              RAII GPU texture: RGBA8 / RGBA32F; EXR loading via
     │                               OpenEXR (all codecs), HDR loading via stb_image,

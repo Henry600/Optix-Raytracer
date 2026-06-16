@@ -194,6 +194,50 @@ int Scene::duplicateSubtree(int nodeIdx)
     return newIdx;
 }
 
+// Recursively resets every node in the subtree rooted at nodeIdx.
+// The parent's children list is NOT modified here — the caller handles that.
+static void freeSubtree(std::vector<std::unique_ptr<Node3D>>& nodes, int nodeIdx)
+{
+    for (int childIdx : nodes[nodeIdx]->children)
+    {
+        freeSubtree(nodes, childIdx);
+    }
+    nodes[nodeIdx].reset();
+}
+
+void Scene::deleteSubtree(int nodeIdx)
+{
+    Node3D& node = *m_nodes[nodeIdx];
+
+    // Detach from the graph so traversals can no longer reach this subtree.
+    if (node.parent >= 0)
+    {
+        auto& siblings = m_nodes[node.parent]->children;
+        siblings.erase(std::remove(siblings.begin(), siblings.end(), nodeIdx),
+                       siblings.end());
+    }
+    else
+    {
+        m_rootNodes.erase(std::remove(m_rootNodes.begin(), m_rootNodes.end(), nodeIdx),
+                          m_rootNodes.end());
+    }
+
+    freeSubtree(m_nodes, nodeIdx);
+
+    // Keep the camera-node sentinel consistent.
+    if (!nodeAlive(m_defaultCameraNodeIdx))
+    {
+        m_defaultCameraNodeIdx = -1;
+    }
+}
+
+bool Scene::nodeAlive(int nodeIdx) const
+{
+    return nodeIdx >= 0
+        && nodeIdx < static_cast<int>(m_nodes.size())
+        && m_nodes[nodeIdx] != nullptr;
+}
+
 Node3D& Scene::nodeAt(int index)
 {
     return *m_nodes[index];

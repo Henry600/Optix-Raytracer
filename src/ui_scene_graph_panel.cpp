@@ -6,8 +6,16 @@
 #include <memory>
 #include <string>
 
+// Pending actions collected during the tree draw — processed after the walk completes
+// so that mutations don't invalidate the node list mid-traversal.
+struct NodeAction
+{
+    int duplicateNodeIdx = -1;
+    int deleteNodeIdx    = -1;
+};
+
 static void drawNode3D(const Scene& scene, int nodeIdx,
-                       int& selectedNodeIdx, int& duplicateNodeIdx)
+                       int& selectedNodeIdx, NodeAction& action)
 {
     const Node3D& node = *scene.nodes()[nodeIdx];
 
@@ -18,6 +26,7 @@ static void drawNode3D(const Scene& scene, int nodeIdx,
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
                              | ImGuiTreeNodeFlags_SpanAvailWidth;
+
     if (nodeIdx == selectedNodeIdx)
     {
         flags |= ImGuiTreeNodeFlags_Selected;
@@ -40,7 +49,12 @@ static void drawNode3D(const Scene& scene, int nodeIdx,
         selectedNodeIdx = nodeIdx;   // right-click also selects the node
         if (ImGui::MenuItem("Duplicate"))
         {
-            duplicateNodeIdx = nodeIdx;
+            action.duplicateNodeIdx = nodeIdx;
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Delete"))
+        {
+            action.deleteNodeIdx = nodeIdx;
         }
         ImGui::EndPopup();
     }
@@ -49,7 +63,7 @@ static void drawNode3D(const Scene& scene, int nodeIdx,
     {
         for (int childIdx : node.children)
         {
-            drawNode3D(scene, childIdx, selectedNodeIdx, duplicateNodeIdx);
+            drawNode3D(scene, childIdx, selectedNodeIdx, action);
         }
         ImGui::TreePop();
     }
@@ -106,19 +120,18 @@ void Application::drawSceneGraphPanel()
     {
         if (!m_sceneFilePath.empty())
         {
-            ImGui::TextDisabled("%s",
-                std::filesystem::path(m_sceneFilePath).filename().string().c_str());
+            ImGui::TextDisabled("%s", std::filesystem::path(m_sceneFilePath).filename().string().c_str());
             ImGui::Separator();
         }
-        int duplicateNodeIdx = -1;
+        NodeAction action;
         for (int rootIdx : m_scene->rootNodes())
         {
-            drawNode3D(*m_scene, rootIdx, m_selectedNodeIdx, duplicateNodeIdx);
+            drawNode3D(*m_scene, rootIdx, m_selectedNodeIdx, action);
         }
 
-        if (duplicateNodeIdx >= 0)
+        if (action.duplicateNodeIdx >= 0)
         {
-            const int newIdx = m_scene->duplicateSubtree(duplicateNodeIdx);
+            const int newIdx = m_scene->duplicateSubtree(action.duplicateNodeIdx);
             try
             {
                 m_scene->buildAccel(m_optixContext);
@@ -130,6 +143,25 @@ void Application::drawSceneGraphPanel()
             buildSbt();
             m_selectedNodeIdx = newIdx;
             m_accumDirty      = true;
+        }
+
+        if (action.deleteNodeIdx >= 0)
+        {
+            m_scene->deleteSubtree(action.deleteNodeIdx);
+            if (!m_scene->nodeAlive(m_selectedNodeIdx))
+            {
+                m_selectedNodeIdx = -1;
+            }
+            try
+            {
+                m_scene->buildAccel(m_optixContext);
+            }
+            catch (const std::exception& e)
+            {
+                m_loadError = std::string("AS build failed: ") + e.what();
+            }
+            buildSbt();
+            m_accumDirty = true;
         }
     }
 

@@ -51,6 +51,13 @@ public:
     // Mesh and material indices are shared (not duplicated). Returns new root index.
     int duplicateSubtree(int nodeIdx);
 
+    // Detach nodeIdx and its entire subtree from the scene graph and free them.
+    // The slot in m_nodes is set to nullptr (tombstone); all other indices stay valid.
+    void deleteSubtree(int nodeIdx);
+
+    // Returns true when nodeIdx refers to a live node (not tombstoned or out of range).
+    bool nodeAlive(int nodeIdx) const;
+
     const std::vector<std::unique_ptr<Node3D>>& nodes()     const;
     const std::vector<int>&                     rootNodes() const;
 
