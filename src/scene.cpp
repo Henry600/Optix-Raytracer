@@ -347,6 +347,51 @@ Accel::MeshDevicePtrs Scene::meshDevicePtrs(size_t meshIdx) const
     return m_accel->meshDevicePtrs(meshIdx);
 }
 
+// ─── Node graph mutations ─────────────────────────────────────────────────────
+
+bool Scene::isDescendantOf(int nodeIdx, int maybeDescendantIdx) const
+{
+    if (maybeDescendantIdx == nodeIdx) { return true; }
+    for (int childIdx : m_nodes[nodeIdx]->children)
+    {
+        if (isDescendantOf(childIdx, maybeDescendantIdx)) { return true; }
+    }
+    return false;
+}
+
+void Scene::moveNode(int srcIdx, int newParentIdx, int insertBeforeSiblingIdx)
+{
+    Node3D& src = *m_nodes[srcIdx];
+
+    // Detach from current location.
+    if (src.parent >= 0)
+    {
+        auto& old = m_nodes[src.parent]->children;
+        old.erase(std::remove(old.begin(), old.end(), srcIdx), old.end());
+    }
+    else
+    {
+        m_rootNodes.erase(std::remove(m_rootNodes.begin(), m_rootNodes.end(), srcIdx),
+                          m_rootNodes.end());
+    }
+
+    // Attach to new location.
+    src.parent = newParentIdx;
+    std::vector<int>& dest = (newParentIdx >= 0)
+        ? m_nodes[newParentIdx]->children
+        : m_rootNodes;
+
+    if (insertBeforeSiblingIdx < 0)
+    {
+        dest.push_back(srcIdx);
+    }
+    else
+    {
+        auto it = std::find(dest.begin(), dest.end(), insertBeforeSiblingIdx);
+        dest.insert(it, srcIdx);
+    }
+}
+
 // ─── Node transforms ──────────────────────────────────────────────────────────
 
 void Scene::updateWorldTransforms(int nodeIdx)

@@ -61,6 +61,16 @@ public:
     const std::vector<std::unique_ptr<Node3D>>& nodes()     const;
     const std::vector<int>&                     rootNodes() const;
 
+    // Returns true when maybeDescendantIdx is nodeIdx itself or any node in
+    // nodeIdx's subtree.  Used to guard against cycles when reparenting.
+    bool isDescendantOf(int nodeIdx, int maybeDescendantIdx) const;
+
+    // Detach srcIdx from its current parent (or root list) and reattach it
+    // under newParentIdx (pass -1 to make it a root), inserting immediately
+    // before insertBeforeSiblingIdx in the new sibling list (pass -1 to append).
+    // worldTransform is NOT updated — call updateWorldTransforms(srcIdx) after.
+    void moveNode(int srcIdx, int newParentIdx, int insertBeforeSiblingIdx);
+
     // Recompute worldTransform for nodeIdx and every descendant.
     // Call after any localTransform change on a node in the hierarchy.
     void updateWorldTransforms(int nodeIdx);
