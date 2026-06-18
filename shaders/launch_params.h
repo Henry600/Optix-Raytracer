@@ -66,6 +66,11 @@ struct LaunchParams
     // Scene textures — flat device array of cudaTextureObject_t, indexed by
     // MaterialData::albedoTexture.  Null when no textures have been uploaded.
     const cudaTextureObject_t* sceneTextures;
+
+    // Picking — only valid during a 1×1 pick launch; ignored by the normal raygen.
+    float     pickU;      // normalised mouse X [0, 1]
+    float     pickV;      // normalised mouse Y [0, 1]
+    uint32_t* pickResult; // device pointer to 1-element output; null during normal render
 };
 
 #endif // OPTIX_RAYTRACER_LAUNCH_PARAMS_H

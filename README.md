@@ -35,10 +35,10 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 ### UI (Dear ImGui with docking)
 | Panel | Contents |
 |---|---|
-| **Viewport** | Live rendered image, resizes dynamically |
+| **Viewport** | Live rendered image, resizes dynamically; left-click to select scene nodes via OptiX pick ray |
 | **Raytracer** | GPU stats, sample count, denoiser toggle, environment controls, HDR output toggle, paper-white slider (active when Windows HDR is on) |
 | **Resources** | Collapsible sub-categories: **Materials** (per-material PBR editor with albedo swatch preview) and **Textures** (loaded scene textures with dimensions and format) |
-| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
+| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; drag to reorder or reparent nodes; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
 | **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
 
@@ -160,6 +160,7 @@ cmake --build build --config Release --parallel
 | **W / S** | Move forward / backward |
 | **A / D** | Strafe left / right |
 | **E / Q** | Move up / down |
+| **Left-click in Viewport** | Select the clicked scene node via OptiX pick ray; click empty space to deselect |
 | **Click node in Scene Graph** | Select node; 3D gizmo appears in Viewport |
 | **Drag gizmo handle** | Translate / rotate / scale the selected node |
 | **Translate / Rotate / Scale buttons** | Switch gizmo operation (Node Properties panel) |
@@ -199,7 +200,10 @@ Optix-Raytracer/
 │   └── regen_ui_spv.ps1            PowerShell script to recompile the UI shaders via glslc
 └── src/
     ├── main.cpp                    Entry point
-    ├── application.h/.cpp          CUDA/OptiX init, viewport panel, per-frame render loop
+    ├── application.h/.cpp          App init, viewport panel, scene loading, per-frame render loop
+    ├── application_pipeline.cpp    OptiX pipeline, program groups, SBT, and 1px pick launch
+    ├── application_camera.cpp      Free-fly camera controller and camera-node sync
+    ├── cuda_optix_check.h          CUDA_CHECK / OPTIX_CHECK error macros (shared across TUs)
     ├── ui_raytracer_panel.cpp      Raytracer panel: GPU stats, scene/env controls, denoiser, HDR
     ├── ui_resources_panel.cpp      Resources panel: full PBR material editor, texture list
     ├── ui_scene_graph_panel.cpp    Scene Graph panel: node hierarchy tree, Add Implicit Shape

@@ -2,6 +2,8 @@ add_executable(OptixRaytracer
     main.cpp
     application.h
     application.cpp
+    application_pipeline.cpp
+    application_camera.cpp
     ui_raytracer_panel.cpp
     ui_resources_panel.cpp
     ui_scene_graph_panel.cpp
@@ -91,8 +93,8 @@ target_link_options(OptixRaytracer PRIVATE
 target_compile_definitions(OptixRaytracer PRIVATE NOMINMAX)
 
 # Visual Studio source groups for cleaner Solution Explorer layout
-source_group("Source Files" FILES main.cpp application.cpp ui_raytracer_panel.cpp ui_resources_panel.cpp ui_scene_graph_panel.cpp ui_node_properties_panel.cpp hdri_browser.cpp vulkan_context.cpp accel.cpp scene.cpp scene_loader.cpp texture.cpp)
-source_group("Header Files" FILES application.h gpu_buffer.h hdri_browser.h vulkan_context.h accel.h camera.h icons.h matrix4x4.h node_3d.h implicit_node.h scene.h scene_loader.h mesh.h texture.h)
+source_group("Source Files" FILES main.cpp application.cpp application_pipeline.cpp application_camera.cpp ui_raytracer_panel.cpp ui_resources_panel.cpp ui_scene_graph_panel.cpp ui_node_properties_panel.cpp hdri_browser.cpp vulkan_context.cpp accel.cpp scene.cpp scene_loader.cpp texture.cpp)
+source_group("Header Files" FILES application.h gpu_buffer.h hdri_browser.h vulkan_context.h accel.h camera.h icons.h matrix4x4.h node_3d.h implicit_node.h scene.h scene_loader.h mesh.h texture.h cuda_optix_check.h)
 
 # Copy FontAwesome font to all output directories so the application can load
 # it at runtime via the relative path "fonts/fa-solid-900.ttf".

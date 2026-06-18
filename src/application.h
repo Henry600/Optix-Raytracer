@@ -98,11 +98,33 @@ private:
     OptixProgramGroup m_pgHitgroupImplicit = nullptr; // analytic implicit shapes
     OptixPipeline     m_pipeline          = nullptr;
 
+    // Pick program groups (compiled into the same pipeline; use a separate SBT)
+    OptixProgramGroup m_pgPickRaygen           = nullptr;
+    OptixProgramGroup m_pgPickMiss             = nullptr;
+    OptixProgramGroup m_pgPickHitgroup         = nullptr;
+    OptixProgramGroup m_pgPickHitgroupImplicit = nullptr;
+
     // Shader binding table
     GPUBuffer               m_sbtRaygenBuffer;
     GPUBuffer               m_sbtMissBuffer;
     GPUBuffer               m_sbtHitgroupBuffer;
     OptixShaderBindingTable m_sbt = {};
+
+    // Pick SBT + result buffer
+    GPUBuffer               m_pickSbtRaygenBuffer;
+    GPUBuffer               m_pickSbtMissBuffer;
+    GPUBuffer               m_pickSbtHitgroupBuffer;
+    OptixShaderBindingTable m_pickSbt = {};
+    GPUBuffer               m_pickResultBuffer;
+
+    // Instance index → scene node index map; rebuilt by buildSbt() every time the
+    // scene graph changes so launchPick() can translate a raw TLAS hit back to a node.
+    std::vector<int>        m_instanceToNode;
+
+    // Fire a 1×1 pick ray at normalised viewport coordinates (u, v) and return the
+    // scene node index of the first hit, or -1 on miss / no scene.
+    int  launchPick(float u, float v);
+    void buildPickSbt();
 
     // Scene materials on device
     GPUBuffer m_materialsBuffer;
