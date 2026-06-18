@@ -1409,7 +1409,7 @@ extern "C" __global__ void __closesthit__implicit()
 
 // ─── 1px picking ─────────────────────────────────────────────────────────────
 // Fires a single ray from normalised screen-space (pickU, pickV) and writes
-// the TLAS instance index of the first hit into pickResult.  0xFFFFFFFF = miss.
+// the TLAS instance index of the closest hit into pickResult.  0xFFFFFFFF = miss.
 
 extern "C" __global__ void __raygen__pick()
 {
@@ -1426,7 +1426,7 @@ extern "C" __global__ void __raygen__pick()
         optixLaunchParams.eye, dir,
         1e-3f, 1e16f, 0.0f,
         OptixVisibilityMask(0xFF),
-        OPTIX_RAY_FLAG_DISABLE_ANYHIT | OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
+        OPTIX_RAY_FLAG_DISABLE_ANYHIT,
         0, 1, 0,
         instanceIdx);
     *optixLaunchParams.pickResult = instanceIdx;

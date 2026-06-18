@@ -721,6 +721,17 @@ bool Application::tick()
                                 static_cast<float>(m_viewportHeight)));
         }
 
+        // ── Click-to-pick ─────────────────────────────────────────────────────
+        if (ImGui::IsItemHovered()
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+            && !ImGuizmo::IsOver())
+        {
+            const ImVec2 mousePos = ImGui::GetMousePos();
+            const float  u = (mousePos.x - imageScreenPos.x) / static_cast<float>(m_viewportWidth);
+            const float  v = (mousePos.y - imageScreenPos.y) / static_cast<float>(m_viewportHeight);
+            m_selectedNodeIdx = launchPick(u, v);
+        }
+
         // ── 3D gizmo overlay ──────────────────────────────────────────────────
         // Render the ImGuizmo gizmo on top of the viewport image for the
         // currently selected scene-graph node.
