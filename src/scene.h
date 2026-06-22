@@ -119,6 +119,17 @@ public:
     // Free the device texture array.  Called automatically by clear().
     void destroyTextureObjects();
 
+    // ── Emissive implicit lights for direct sampling (NEE) ────────────────────
+    // Walk the scene graph in the same DFS order as the TLAS build and collect
+    // one EmissiveLightData per ImplicitNode whose material has non-zero emission.
+    // Must be called after any operation that changes node transforms, the scene
+    // graph structure, or material emission properties.
+    void uploadEmissiveLights();
+
+    // Device pointer to the EmissiveLightData array; null when none exist.
+    const EmissiveLightData* emissiveLights()     const;
+    int                      emissiveLightCount() const;
+
     void clear();        // remove all scene data and free the acceleration structure
     bool empty() const;  // true when there are no meshes
 
@@ -141,7 +152,9 @@ private:
     std::vector<int>                     m_rootNodes;
 
     std::unique_ptr<Accel> m_accel;  // null until buildAccel() is called
-    GPUBuffer m_textureObjectsBuffer;  // device cudaTextureObject_t[]
+    GPUBuffer m_textureObjectsBuffer;   // device cudaTextureObject_t[]
+    GPUBuffer m_emissiveLightsBuffer;   // device EmissiveLightData[]
+    int       m_emissiveLightCount = 0;
 };
 
 #endif // OPTIX_RAYTRACER_SCENE_H

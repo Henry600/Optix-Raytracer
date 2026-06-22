@@ -3,6 +3,7 @@
 #include "matrix4x4.h"
 
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -292,9 +293,145 @@ const cudaTextureObject_t* Scene::textureObjects() const
     return m_textureObjectsBuffer.typedPtr<const cudaTextureObject_t>();
 }
 
+// ─── Emissive implicit lights ─────────────────────────────────────────────────
+
+void Scene::uploadEmissiveLights()
+{
+    // Walk the scene graph in the same DFS order as Accel::buildTlasPhase so
+    // each EmissiveLightData.instanceId matches the TLAS instance index OptiX
+    // assigns.  The instance counter increments for every TLAS instance (mesh
+    // or implicit); only ImplicitNodes with non-zero emission emit a record.
+
+    std::vector<EmissiveLightData> lights;
+    unsigned int instanceCounter = 0;
+
+    const float kFourPi = 12.56637061436f;  // sphere area
+    const float kSixPi  = 18.84955592154f;  // cylinder area (lateral 4π + 2 caps π each)
+
+    std::function<void(int)> walk = [&](int nodeIdx)
+    {
+        const Node3D& node = *m_nodes[nodeIdx];
+
+        if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
+        {
+            for (int j = 0; j < static_cast<int>(mn->meshIndices.size()); ++j)
+            {
+                const int mi = mn->meshIndices[j];
+                if (mi < 0 || mi >= static_cast<int>(m_meshes.size())) { continue; }
+                ++instanceCounter;
+            }
+        }
+        else if (const ImplicitNode* imp = dynamic_cast<const ImplicitNode*>(&node))
+        {
+            const unsigned int thisId = instanceCounter++;
+
+            const int mi = imp->materialIndex;
+            if (mi >= 0 && mi < static_cast<int>(m_materials.size()))
+            {
+                const MaterialData& mat = m_materials[mi];
+                const float3 em = make_float3(
+                    mat.emission.x * mat.emissionScale,
+                    mat.emission.y * mat.emissionScale,
+                    mat.emission.z * mat.emissionScale);
+
+                if (em.x > 0.0f || em.y > 0.0f || em.z > 0.0f)
+                {
+                    const Matrix4x4& w   = node.worldTransform;
+                    const Matrix4x4  inv = mat4Inverse(w);
+
+                    EmissiveLightData ld;
+
+                    ld.l2w[ 0] = w.m[0][0];  ld.l2w[ 1] = w.m[0][1];
+                    ld.l2w[ 2] = w.m[0][2];  ld.l2w[ 3] = w.m[0][3];
+                    ld.l2w[ 4] = w.m[1][0];  ld.l2w[ 5] = w.m[1][1];
+                    ld.l2w[ 6] = w.m[1][2];  ld.l2w[ 7] = w.m[1][3];
+                    ld.l2w[ 8] = w.m[2][0];  ld.l2w[ 9] = w.m[2][1];
+                    ld.l2w[10] = w.m[2][2];  ld.l2w[11] = w.m[2][3];
+
+                    ld.w2l[ 0] = inv.m[0][0];  ld.w2l[ 1] = inv.m[0][1];
+                    ld.w2l[ 2] = inv.m[0][2];  ld.w2l[ 3] = inv.m[0][3];
+                    ld.w2l[ 4] = inv.m[1][0];  ld.w2l[ 5] = inv.m[1][1];
+                    ld.w2l[ 6] = inv.m[1][2];  ld.w2l[ 7] = inv.m[1][3];
+                    ld.w2l[ 8] = inv.m[2][0];  ld.w2l[ 9] = inv.m[2][1];
+                    ld.w2l[10] = inv.m[2][2];  ld.w2l[11] = inv.m[2][3];
+
+                    ld.emission = em;
+
+                    // |det(w2l_3x3)| for the Jacobian; equals 1/|det(l2w_3x3)|
+                    const float a = inv.m[0][0], b = inv.m[0][1], c = inv.m[0][2];
+                    const float d = inv.m[1][0], e = inv.m[1][1], f = inv.m[1][2];
+                    const float g = inv.m[2][0], h = inv.m[2][1], i = inv.m[2][2];
+                    const float det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
+                    ld.invDetW2l = (det != 0.0f) ? std::abs(det) : 1.0f;
+
+                    switch (imp->type)
+                    {
+                        case ImplicitType::Sphere:
+                            ld.localArea = kFourPi;
+                            ld.type      = IMPLICIT_SPHERE;
+                            break;
+                        case ImplicitType::Box:
+                            ld.localArea = 24.0f;
+                            ld.type      = IMPLICIT_BOX;
+                            break;
+                        case ImplicitType::Cylinder:
+                            ld.localArea = kSixPi;
+                            ld.type      = IMPLICIT_CYLINDER;
+                            break;
+                        default:
+                            ld.localArea = kFourPi;
+                            ld.type      = IMPLICIT_SPHERE;
+                            break;
+                    }
+
+                    ld.instanceId = thisId;
+                    lights.push_back(ld);
+                }
+            }
+        }
+
+        for (int childIdx : node.children)
+        {
+            walk(childIdx);
+        }
+    };
+
+    for (int rootIdx : m_rootNodes)
+    {
+        walk(rootIdx);
+    }
+
+    if (lights.empty())
+    {
+        m_emissiveLightsBuffer.free();
+        m_emissiveLightCount = 0;
+        return;
+    }
+
+    const size_t bytes = lights.size() * sizeof(EmissiveLightData);
+    if (m_emissiveLightsBuffer.size() < bytes)
+    {
+        m_emissiveLightsBuffer.alloc(bytes);
+    }
+    m_emissiveLightsBuffer.upload(lights.data(), bytes);
+    m_emissiveLightCount = static_cast<int>(lights.size());
+}
+
+const EmissiveLightData* Scene::emissiveLights() const
+{
+    return m_emissiveLightsBuffer.typedPtr<const EmissiveLightData>();
+}
+
+int Scene::emissiveLightCount() const
+{
+    return m_emissiveLightCount;
+}
+
 void Scene::clear()
 {
     destroyTextureObjects();
+    m_emissiveLightsBuffer.free();
+    m_emissiveLightCount = 0;
     m_accel.reset();  // free GPU AS memory before geometry is cleared
     m_meshes.clear();
     m_materials.clear();

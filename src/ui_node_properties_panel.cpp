@@ -80,6 +80,7 @@ void Application::drawNodePropertiesPanel()
                 node.localTransform = mat4FromColMajor(colMajor);
                 m_scene->updateWorldTransforms(m_selectedNodeIdx);
                 m_scene->rebuildTlas(m_optixContext);
+                uploadEmissiveLights();
                 m_accumDirty = true;
                 syncFlyCameraFromNode(m_selectedNodeIdx);
             }
@@ -199,6 +200,7 @@ void Application::drawNodePropertiesPanel()
                     m_loadError = std::string("AS rebuild failed: ") + e.what();
                 }
                 buildSbt();
+                uploadEmissiveLights();
                 m_accumDirty = true;
             }
 
@@ -225,6 +227,7 @@ void Application::drawNodePropertiesPanel()
                     {
                         implNode->materialIndex = k;
                         buildSbt();
+                        uploadEmissiveLights();
                         m_accumDirty = true;
                     }
                     if (selected) { ImGui::SetItemDefaultFocus(); }

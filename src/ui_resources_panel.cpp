@@ -23,6 +23,7 @@ void Application::drawResourcesPanel()
             {
                 m_scene->addMaterial(MaterialData{}, "New Material");
                 uploadMaterials();
+                uploadEmissiveLights();
                 m_accumDirty = true;
             }
         }
@@ -282,6 +283,7 @@ void Application::drawResourcesPanel()
         if (anyMatChanged)
         {
             uploadMaterials();
+            uploadEmissiveLights();
             m_accumDirty = true;
         }
     }

@@ -322,6 +322,13 @@ void Application::uploadMaterials()
     m_materialsBuffer.upload(mats.data(), matBytes);
 }
 
+void Application::uploadEmissiveLights()
+{
+    m_scene->uploadEmissiveLights();
+    m_launchParams.emissiveLights     = m_scene->emissiveLights();
+    m_launchParams.emissiveLightCount = m_scene->emissiveLightCount();
+}
+
 // ─── Scene loading ────────────────────────────────────────────────────────────
 
 void Application::loadScene(const std::string& path)
@@ -361,6 +368,7 @@ void Application::loadScene(const std::string& path)
 
     m_accumDirty = true;  // scene changed — clear accumulated samples
     buildSbt();  // rebuild with new mesh count (0 if load failed or no geometry)
+    uploadEmissiveLights();  // must be called after buildSbt() so instance IDs match
 
     // Sync fly-camera state from the newly loaded (or default) scene camera so
     // movement immediately continues from the correct position and orientation.
@@ -821,6 +829,7 @@ bool Application::tick()
 
                 m_scene->updateWorldTransforms(m_selectedNodeIdx);
                 m_scene->rebuildTlas(m_optixContext);
+                uploadEmissiveLights();
                 m_accumDirty = true;
                 syncFlyCameraFromNode(m_selectedNodeIdx);
             }

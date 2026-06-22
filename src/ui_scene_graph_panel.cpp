@@ -206,6 +206,7 @@ void Application::drawSceneGraphPanel()
                     m_loadError = std::string("AS build failed: ") + e.what();
                 }
                 buildSbt();
+                uploadEmissiveLights();
                 m_selectedNodeIdx = idx;
                 m_accumDirty      = true;
             }
@@ -243,6 +244,7 @@ void Application::drawSceneGraphPanel()
                 m_loadError = std::string("AS build failed: ") + e.what();
             }
             buildSbt();
+            uploadEmissiveLights();
             m_selectedNodeIdx = newIdx;
             m_accumDirty      = true;
         }
@@ -263,6 +265,7 @@ void Application::drawSceneGraphPanel()
                 m_loadError = std::string("AS build failed: ") + e.what();
             }
             buildSbt();
+            uploadEmissiveLights();
             m_accumDirty = true;
         }
 
@@ -337,6 +340,7 @@ void Application::drawSceneGraphPanel()
                     m_loadError = std::string("AS build failed: ") + e.what();
                 }
                 buildSbt();
+                uploadEmissiveLights();
                 m_selectedNodeIdx = src;
                 m_accumDirty      = true;
             }

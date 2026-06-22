@@ -67,6 +67,11 @@ struct LaunchParams
     // MaterialData::albedoTexture.  Null when no textures have been uploaded.
     const cudaTextureObject_t* sceneTextures;
 
+    // Emissive implicit lights for direct sampling (NEE).
+    // Null / 0 when no emissive implicit shapes exist in the scene.
+    const EmissiveLightData* emissiveLights;
+    int                      emissiveLightCount;
+
     // Picking — only valid during a 1×1 pick launch; ignored by the normal raygen.
     float     pickU;      // normalised mouse X [0, 1]
     float     pickV;      // normalised mouse Y [0, 1]

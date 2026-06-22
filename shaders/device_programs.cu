@@ -73,8 +73,9 @@ struct PathVertex
     float  clearcoat;            // clearcoat layer intensity [0, 1]
     float  clearcoatRoughness;   // clearcoat layer roughness [0, 1]
     int    thinWalled;           // 1 = zero-thickness surface; pass through without refraction
-    float  t;                   // ray travel distance to this hit (Beer-Lambert)
-    int    hit;          // 1 = geometry hit, 0 = ray escaped to background
+    float        t;          // ray travel distance to this hit (Beer-Lambert)
+    unsigned int instanceId; // TLAS instance index; ~0u when not set (miss / mesh)
+    int          hit;        // 1 = geometry hit, 0 = ray escaped to background
 };
 
 static __forceinline__ __device__
@@ -406,6 +407,191 @@ float evalEnvMapPdf(float3 dir)
         : 0.0f;
 }
 
+// ─── Emissive-light direct sampling (NEE) ────────────────────────────────────
+//
+// Each EmissiveLightData stores the local-to-world (l2w) and world-to-local (w2l)
+// 3×4 transforms for one implicit shape that carries an emissive material.
+// Sampling is done in the canonical local space (unit sphere/cube/cylinder), then
+// the result is transformed to world space.  The solid-angle PDF is obtained by
+// converting the local uniform area PDF through the surface Jacobian:
+//
+//   dA_world = |det(L)| · |W^T · n_local| · dA_local
+//
+// where L = l2w_3x3, W = w2l_3x3 = L^{-1}.  Both matrices are stored per light
+// so the Jacobian factor |W^T · n_local| is cheap to evaluate on device.
+
+// Apply the 3×4 l2w transform to a local-space point.
+static __forceinline__ __device__
+float3 lightL2WPoint(const EmissiveLightData& L, float3 p)
+{
+    return make_float3(
+        L.l2w[0]*p.x + L.l2w[1]*p.y + L.l2w[ 2]*p.z + L.l2w[ 3],
+        L.l2w[4]*p.x + L.l2w[5]*p.y + L.l2w[ 6]*p.z + L.l2w[ 7],
+        L.l2w[8]*p.x + L.l2w[9]*p.y + L.l2w[10]*p.z + L.l2w[11]);
+}
+
+// Transform a local normal to world space: n_world = normalize((w2l_3x3)^T · n_local).
+// This is the inverse-transpose normal transform, correct for non-uniform scale.
+static __forceinline__ __device__
+float3 lightL2WNormal(const EmissiveLightData& L, float3 n)
+{
+    return devNormalize(make_float3(
+        L.w2l[0]*n.x + L.w2l[4]*n.y + L.w2l[ 8]*n.z,
+        L.w2l[1]*n.x + L.w2l[5]*n.y + L.w2l[ 9]*n.z,
+        L.w2l[2]*n.x + L.w2l[6]*n.y + L.w2l[10]*n.z));
+}
+
+// |( w2l_3x3 )^T · n_local| — Jacobian magnitude for the local→world area mapping.
+static __forceinline__ __device__
+float lightJacobianLen(const EmissiveLightData& L, float3 n)
+{
+    const float3 wn = make_float3(
+        L.w2l[0]*n.x + L.w2l[4]*n.y + L.w2l[ 8]*n.z,
+        L.w2l[1]*n.x + L.w2l[5]*n.y + L.w2l[ 9]*n.z,
+        L.w2l[2]*n.x + L.w2l[6]*n.y + L.w2l[10]*n.z);
+    return sqrtf(devDot(wn, wn));
+}
+
+// Sample uniformly on the unit sphere surface; returns the point (= outward normal).
+static __forceinline__ __device__
+float3 sampleUnitSphere(float r1, float r2)
+{
+    const float cosTheta = 1.0f - 2.0f * r1;
+    const float sinTheta = sqrtf(fmaxf(0.0f, 1.0f - cosTheta * cosTheta));
+    const float phi      = 6.28318530718f * r2;
+    return make_float3(sinTheta * cosf(phi), sinTheta * sinf(phi), cosTheta);
+}
+
+// Sample uniformly on the unit cube (6 faces, area 4 each, total 24).
+// r3 selects the face; r1/r2 pick the point within it.  Writes n_local.
+static __forceinline__ __device__
+float3 sampleUnitBox(float r1, float r2, float r3, float3& n_local)
+{
+    const int   face = min((int)(r3 * 6.0f), 5);
+    const float sign = (face & 1) ? -1.0f : 1.0f;
+    const float u    = r1 * 2.0f - 1.0f;
+    const float v    = r2 * 2.0f - 1.0f;
+    n_local = make_float3(0.0f, 0.0f, 0.0f);
+    switch (face >> 1)
+    {
+        case 0:  n_local.x = sign; return make_float3(sign, u, v);
+        case 1:  n_local.y = sign; return make_float3(u, sign, v);
+        default: n_local.z = sign; return make_float3(u, v, sign);
+    }
+}
+
+// Sample uniformly on the unit cylinder (lateral 4π, each cap π, total 6π).
+// r3 selects the region; r1/r2 pick the point.  Writes n_local.
+static __forceinline__ __device__
+float3 sampleUnitCylinder(float r1, float r2, float r3, float3& n_local)
+{
+    const float kTwoPi = 6.28318530718f;
+    if (r3 < 2.0f / 3.0f)
+    {
+        const float phi = r1 * kTwoPi;
+        const float y   = r2 * 2.0f - 1.0f;
+        const float cx  = cosf(phi), cz = sinf(phi);
+        n_local = make_float3(cx, 0.0f, cz);
+        return make_float3(cx, y, cz);
+    }
+    else
+    {
+        const float sign = (r3 < 5.0f / 6.0f) ? -1.0f : 1.0f;
+        const float rad  = sqrtf(r1);
+        const float phi  = r2 * kTwoPi;
+        n_local = make_float3(0.0f, sign, 0.0f);
+        return make_float3(rad * cosf(phi), sign, rad * sinf(phi));
+    }
+}
+
+// Sample one randomly-chosen emissive implicit light.
+// r0 selects the light; r1/r2/r3 sample the surface.
+// Writes world-space sample position, world-space light normal, the selected
+// light record pointer, and the solid-angle PDF (selection × area converted).
+// Returns false when no lights exist or the sampled face is back-facing.
+static __forceinline__ __device__
+bool sampleEmissiveLight(
+    float3 shadingPos,
+    float r0, float r1, float r2, float r3,
+    float3& outPos, float3& outN,
+    const EmissiveLightData*& outLight, float& outPdf)
+{
+    const int N = optixLaunchParams.emissiveLightCount;
+    if (N <= 0) { return false; }
+
+    const int idx = min((int)(r0 * (float)N), N - 1);
+    const EmissiveLightData& light = optixLaunchParams.emissiveLights[idx];
+
+    float3 p_local, n_local;
+    if (light.type == IMPLICIT_SPHERE)
+    {
+        n_local = sampleUnitSphere(r1, r2);
+        p_local = n_local;
+    }
+    else if (light.type == IMPLICIT_BOX)
+    {
+        p_local = sampleUnitBox(r1, r2, r3, n_local);
+    }
+    else
+    {
+        p_local = sampleUnitCylinder(r1, r2, r3, n_local);
+    }
+
+    outPos = lightL2WPoint(light, p_local);
+    outN   = lightL2WNormal(light, n_local);
+
+    const float3 toLight = outPos - shadingPos;
+    const float  dist2   = devDot(toLight, toLight);
+    if (dist2 < 1e-8f) { return false; }
+    const float dist = sqrtf(dist2);
+    const float3 dir = toLight * (1.0f / dist);
+
+    const float cosLight = devDot(outN, -dir);
+    if (cosLight <= 1e-4f) { return false; }
+
+    const float jacobLen = lightJacobianLen(light, n_local);
+    if (jacobLen < 1e-8f) { return false; }
+
+    // p_omega = (1/N) * (1/localArea) * (invDetW2l/jacobLen) * dist²/cosLight
+    outPdf  = (1.0f / (float)N) * light.invDetW2l * dist2
+            / (light.localArea * jacobLen * cosLight);
+    outLight = &light;
+    return true;
+}
+
+// Evaluate the solid-angle PDF that sampleEmissiveLight would assign to a
+// path that arrived at hitPos (world normal hitN, distance hitT) from prevPos.
+// Returns 0 when instanceId doesn't match any emissive light.
+static __forceinline__ __device__
+float evalEmissiveLightPdf(
+    unsigned int instanceId,
+    float3 prevPos, float3 hitPos, float3 hitN, float hitT)
+{
+    const int N = optixLaunchParams.emissiveLightCount;
+    for (int i = 0; i < N; ++i)
+    {
+        const EmissiveLightData& light = optixLaunchParams.emissiveLights[i];
+        if (light.instanceId != instanceId) { continue; }
+
+        // n_local = normalize(l2w_3x3 * hitN): inverse of the normal transform
+        // Derivation: hitN = normalize(W^T * n_local) → n_local ∝ L * hitN
+        const float3 n_local = devNormalize(make_float3(
+            light.l2w[0]*hitN.x + light.l2w[1]*hitN.y + light.l2w[ 2]*hitN.z,
+            light.l2w[4]*hitN.x + light.l2w[5]*hitN.y + light.l2w[ 6]*hitN.z,
+            light.l2w[8]*hitN.x + light.l2w[9]*hitN.y + light.l2w[10]*hitN.z));
+
+        const float cosLight = devDot(hitN, -(hitPos - prevPos) * (1.0f / hitT));
+        if (cosLight <= 1e-4f) { return 0.0f; }
+
+        const float jacobLen = lightJacobianLen(light, n_local);
+        if (jacobLen < 1e-8f) { return 0.0f; }
+
+        return (1.0f / (float)N) * light.invDetW2l * (hitT * hitT)
+             / (light.localArea * jacobLen * cosLight);
+    }
+    return 0.0f;
+}
+
 // ─── Display write-out ────────────────────────────────────────────────────────
 // Writes a linear-radiance colour to the float4 display buffer.
 // hdrDisplay=0: Reinhard only — linear [0,1] for scRGB/EXTENDED_SRGB_LINEAR.
@@ -532,7 +718,8 @@ extern "C" __global__ void __raygen__renderFrame()
     for (int bounce = 0; bounce < MAX_BOUNCES; ++bounce)
     {
         PathVertex vtx;
-        vtx.hit = 0;
+        vtx.hit        = 0;
+        vtx.instanceId = ~0u;
 
         uint32_t p0, p1;
         packPointer(&vtx, p0, p1);
@@ -591,7 +778,25 @@ extern "C" __global__ void __raygen__renderFrame()
         throughput.z *= expf(-absorb.z * vtx.t);
 
         // ── Emission ──────────────────────────────────────────────────────────
-        radiance += throughput * vtx.emission;
+        // When emissive NEE is active and this hit was an implicit light, apply
+        // the MIS power heuristic to avoid double-counting direct contributions:
+        // the NEE strategy already sampled this light in the previous bounce.
+        if (optixLaunchParams.emissiveLightCount > 0
+            && vtx.instanceId != ~0u
+            && bsdfPdfForMis > 0.0f)
+        {
+            const float pLight = evalEmissiveLightPdf(
+                vtx.instanceId, rayOrig, vtx.pos, vtx.N, vtx.t);
+            const float wBsdf  = (pLight > 0.0f)
+                ? (bsdfPdfForMis * bsdfPdfForMis)
+                  / (bsdfPdfForMis * bsdfPdfForMis + pLight * pLight)
+                : 1.0f;
+            radiance += throughput * vtx.emission * wBsdf;
+        }
+        else
+        {
+            radiance += throughput * vtx.emission;
+        }
 
         // ── Lobe selection: clearcoat → specular → diffuse / refraction ─────────
         //
@@ -736,6 +941,72 @@ extern "C" __global__ void __raygen__renderFrame()
                     }
                 }
 
+                // ── NEE: specular direct emissive-light sampling ──────────────
+                if (optixLaunchParams.emissiveLightCount > 0)
+                {
+                    float3 lightPos, lightN;
+                    const EmissiveLightData* selectedLight = nullptr;
+                    float lightPdf = 0.0f;
+                    if (sampleEmissiveLight(vtx.pos,
+                            rnd(seed), rnd(seed), rnd(seed), rnd(seed),
+                            lightPos, lightN, selectedLight, lightPdf))
+                    {
+                        const float3 toLight  = lightPos - vtx.pos;
+                        const float  dist2    = devDot(toLight, toLight);
+                        const float  dist     = sqrtf(dist2);
+                        const float3 neeDir   = toLight * (1.0f / dist);
+                        const float  cosI_nee = devDot(neeDir, Nf);
+
+                        if (cosI_nee > 0.0f)
+                        {
+                            const float3 H_nee     = devNormalize(V + neeDir);
+                            const float  cosH_nee  = fmaxf(0.0f, devDot(H_nee, Nf));
+                            const float  cosVH_nee = fmaxf(0.0f, devDot(V, H_nee));
+                            const float  fNEE_diel = devFresnelDielectric(
+                                cosVH_nee, medIor[medTop] / vtx.ior);
+                            const float3 F_nee     = devMix(
+                                make_float3(fNEE_diel, fNEE_diel, fNEE_diel),
+                                devFresnel(cosVH_nee, vtx.albedo), vtx.metallic);
+                            const float  brdfCosI  = devGGX_BRDFCosI(
+                                cosI_nee, cosO, cosH_nee, alpha);
+
+                            if (brdfCosI > 0.0f)
+                            {
+                                uint32_t shadowVis = 0u;
+                                uint32_t shadowFR  = __float_as_uint(1.0f);
+                                uint32_t shadowFG  = __float_as_uint(1.0f);
+                                uint32_t shadowFB  = __float_as_uint(1.0f);
+                                optixTrace(
+                                    optixLaunchParams.traversable,
+                                    vtx.pos + Nf * 1e-3f, neeDir,
+                                    1e-3f, dist - 2e-3f, 0.0f,
+                                    OptixVisibilityMask(0xFF),
+                                    OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
+                                    0, 1, 1,
+                                    shadowVis, shadowFR, shadowFG, shadowFB);
+
+                                if (shadowVis)
+                                {
+                                    const float3 shadowFilter = make_float3(
+                                        __uint_as_float(shadowFR),
+                                        __uint_as_float(shadowFG),
+                                        __uint_as_float(shadowFB));
+                                    const float pGGX_nee = devGGX_PDF(
+                                        cosO, cosH_nee, alpha);
+                                    const float pBsdf    = (1.0f - p_coat)
+                                                         * p_spec * pGGX_nee;
+                                    const float wNee     = lightPdf * lightPdf
+                                        / fmaxf(lightPdf * lightPdf + pBsdf * pBsdf,
+                                                1e-12f);
+                                    radiance += throughput * shadowFilter
+                                              * F_nee * brdfCosI / lightPdf
+                                              * selectedLight->emission * wNee;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── Continue path with BSDF-sampled direction ──────────────────
                 // p_spec already divided above; only the BRDF weight remains.
                 throughput *= F * devSmithG1(cosNL, alpha);
@@ -806,6 +1077,57 @@ extern "C" __global__ void __raygen__renderFrame()
                                                    / (neePdf * neePdf + pBsdf * pBsdf);
                                 radiance += throughput * shadowFilter
                                           * (cosL * kInvPi / neePdf) * neeL * wNee;
+                            }
+                        }
+                    }
+
+                    // ── NEE: diffuse direct emissive-light sampling ───────────
+                    if (optixLaunchParams.emissiveLightCount > 0)
+                    {
+                        float3 lightPos, lightN;
+                        const EmissiveLightData* selectedLight = nullptr;
+                        float lightPdf = 0.0f;
+                        if (sampleEmissiveLight(vtx.pos,
+                                rnd(seed), rnd(seed), rnd(seed), rnd(seed),
+                                lightPos, lightN, selectedLight, lightPdf))
+                        {
+                            const float3 toLight = lightPos - vtx.pos;
+                            const float  dist2   = devDot(toLight, toLight);
+                            const float  dist    = sqrtf(dist2);
+                            const float3 neeDir  = toLight * (1.0f / dist);
+                            const float  cosL    = devDot(neeDir, Nf);
+
+                            if (cosL > 0.0f)
+                            {
+                                uint32_t shadowVis = 0u;
+                                uint32_t shadowFR  = __float_as_uint(1.0f);
+                                uint32_t shadowFG  = __float_as_uint(1.0f);
+                                uint32_t shadowFB  = __float_as_uint(1.0f);
+                                optixTrace(
+                                    optixLaunchParams.traversable,
+                                    vtx.pos + Nf * 1e-3f, neeDir,
+                                    1e-3f, dist - 2e-3f, 0.0f,
+                                    OptixVisibilityMask(0xFF),
+                                    OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
+                                    0, 1, 1,
+                                    shadowVis, shadowFR, shadowFG, shadowFB);
+
+                                if (shadowVis)
+                                {
+                                    const float3 shadowFilter = make_float3(
+                                        __uint_as_float(shadowFR),
+                                        __uint_as_float(shadowFG),
+                                        __uint_as_float(shadowFB));
+                                    const float kInvPi = 0.31830988618f;
+                                    const float pBsdf  = (1.0f - p_coat)
+                                        * (1.0f - p_spec) * (1.0f - p_trans)
+                                        * cosL * kInvPi;
+                                    const float wNee   = (lightPdf * lightPdf)
+                                        / (lightPdf * lightPdf + pBsdf * pBsdf);
+                                    radiance += throughput * shadowFilter
+                                              * (cosL * kInvPi / lightPdf)
+                                              * selectedLight->emission * wNee;
+                                }
                             }
                         }
                     }
@@ -1148,7 +1470,8 @@ extern "C" __global__ void __closesthit__radiance()
         vtx->thinWalled         = 0;
     }
 
-    vtx->hit = 1;
+    vtx->hit        = 1;
+    vtx->instanceId = ~0u;  // mesh hits are never in the emissive-lights array
 }
 
 // ─── Implicit shape intersection helpers ─────────────────────────────────────
@@ -1404,7 +1727,8 @@ extern "C" __global__ void __closesthit__implicit()
         vtx->thinWalled         = 0;
     }
 
-    vtx->hit = 1;
+    vtx->hit        = 1;
+    vtx->instanceId = optixGetInstanceId();  // used by emissive NEE MIS
 }
 
 // ─── 1px picking ─────────────────────────────────────────────────────────────

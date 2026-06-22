@@ -129,6 +129,8 @@ private:
     // Scene materials on device
     GPUBuffer m_materialsBuffer;
 
+    void uploadEmissiveLights();  // delegates to Scene; syncs launch params
+
     // Sample accumulation
     GPUBuffer m_accumBuffer;
     uint32_t  m_sampleCount = 0;

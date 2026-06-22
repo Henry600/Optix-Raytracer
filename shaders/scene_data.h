@@ -62,4 +62,20 @@ struct ImplicitShapeData
     int          materialIndex; // into the per-launch MaterialData array
 };
 
+// One emissive implicit light — uploaded per-frame for direct light sampling (NEE).
+// Stores the local-to-world transform and its inverse so the device can sample a
+// point on the canonical unit shape and compute a correct solid-angle PDF via the
+// surface Jacobian:  dA_world = |det(L)| * |W^T * n_local| * dA_local
+// where L = l2w_3x3, W = w2l_3x3 = L^{-1}.
+struct EmissiveLightData
+{
+    float        l2w[12];      // local-to-world 3×4, row-major (last row [0,0,0,1] implicit)
+    float        w2l[12];      // world-to-local 3×4, row-major
+    float3       emission;     // linear emission (sRGB^2.2 * emissionScale)
+    float        invDetW2l;    // |det(w2l_3x3)| = 1/|det(l2w_3x3)|
+    float        localArea;    // canonical surface area: 4π (sphere), 24 (box), 6π (cyl)
+    unsigned int type;         // ImplicitTypeGPU
+    unsigned int instanceId;   // TLAS instance index, for MIS at direct emissive hits
+};
+
 #endif // OPTIX_RAYTRACER_SCENE_DATA_H
