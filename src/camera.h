@@ -49,6 +49,13 @@ inline Camera Camera::makeDefault()
     cam.view.m[2][3] = -3.0f;
     cam.view.m[3][3] = 1.0f;
 
+    // Focus distance = distance from camera to origin, so the default orbit
+    // target (origin) is exactly in focus.
+    const float px = cam.transform.m[0][3];
+    const float py = cam.transform.m[1][3];
+    const float pz = cam.transform.m[2][3];
+    cam.focusDistance = sqrtf(px*px + py*py + pz*pz);
+
     // Cache yFov from physical parameters (16:9 default aspect ratio)
     const float sensorHeight = cam.sensorSize / (16.0f / 9.0f);
     cam.yFov = 2.0f * atanf(sensorHeight / (2.0f * cam.focalLength));

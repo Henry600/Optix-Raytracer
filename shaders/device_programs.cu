@@ -1745,6 +1745,7 @@ extern "C" __global__ void __raygen__pick()
         + ndcY * optixLaunchParams.V);
 
     uint32_t instanceIdx = 0xFFFFFFFFu;
+    uint32_t hitT_bits   = __float_as_uint(-1.0f);  // -1 = miss sentinel
     optixTrace(
         optixLaunchParams.traversable,
         optixLaunchParams.eye, dir,
@@ -1752,16 +1753,23 @@ extern "C" __global__ void __raygen__pick()
         OptixVisibilityMask(0xFF),
         OPTIX_RAY_FLAG_DISABLE_ANYHIT,
         0, 1, 0,
-        instanceIdx);
+        instanceIdx, hitT_bits);
+
     *optixLaunchParams.pickResult = instanceIdx;
+    if (optixLaunchParams.pickDistance)
+    {
+        *optixLaunchParams.pickDistance = __uint_as_float(hitT_bits);
+    }
 }
 
 extern "C" __global__ void __closesthit__pick()
 {
     optixSetPayload_0(optixGetInstanceIndex());
+    optixSetPayload_1(__float_as_uint(optixGetRayTmax()));
 }
 
 extern "C" __global__ void __miss__pick()
 {
     optixSetPayload_0(0xFFFFFFFFu);
+    optixSetPayload_1(__float_as_uint(-1.0f));
 }

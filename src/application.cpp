@@ -738,6 +738,71 @@ bool Application::tick()
             const float  u = (mousePos.x - imageScreenPos.x) / static_cast<float>(m_viewportWidth);
             const float  v = (mousePos.y - imageScreenPos.y) / static_cast<float>(m_viewportHeight);
             m_selectedNodeIdx = launchPick(u, v);
+
+            // Update orbit pivot eagerly: selected node's world origin, or the
+            // camera focus point when nothing is selected / camera node is hit.
+            {
+                const float sy = sinf(m_camYaw), cy = cosf(m_camYaw);
+                const float sp = sinf(m_camPitch), cp = cosf(m_camPitch);
+                const float3 fwd = { sy*cp, sp, -cy*cp };
+                const float  fd  = m_scene->camera().focusDistance;
+
+                const bool hasNode  = m_selectedNodeIdx >= 0
+                                      && m_scene->nodeAlive(m_selectedNodeIdx);
+                const bool isCamera = hasNode
+                                      && std::string(m_scene->nodeAt(m_selectedNodeIdx).typeName()) == "Camera";
+
+                if (hasNode && !isCamera)
+                {
+                    const Matrix4x4& world = m_scene->nodeAt(m_selectedNodeIdx).worldTransform;
+                    m_orbitPivot = { world.m[0][3], world.m[1][3], world.m[2][3] };
+                }
+                else
+                {
+                    m_orbitPivot = { m_camPos.x + fwd.x * fd,
+                                     m_camPos.y + fwd.y * fd,
+                                     m_camPos.z + fwd.z * fd };
+                }
+            }
+        }
+
+        // ── Middle-click focus ─────────────────────────────────────────────────
+        // Shoot a pick ray, set the camera focus distance to the hit depth, and
+        // store the 3D hit point as the orbit pivot so Ctrl+RMB always orbits
+        // around the focused point regardless of which node is selected.
+        if (ImGui::IsItemHovered()
+            && ImGui::IsMouseClicked(ImGuiMouseButton_Middle))
+        {
+            const ImVec2 mousePos = ImGui::GetMousePos();
+            const float  u = (mousePos.x - imageScreenPos.x) / static_cast<float>(m_viewportWidth);
+            const float  v = (mousePos.y - imageScreenPos.y) / static_cast<float>(m_viewportHeight);
+            float dist = -1.0f;
+            launchPick(u, v, &dist);
+            if (dist > 0.0f)
+            {
+                Camera cam = m_scene->camera();
+                cam.focusDistance = dist;
+                m_scene->setCamera(std::move(cam));
+
+                // Reconstruct the world-space hit point from the pixel ray direction
+                // (camera basis vectors stored in m_launchParams) and set it as the
+                // orbit pivot so Ctrl+RMB revolves around the focused surface.
+                const float ndcX  = 2.0f * u - 1.0f;
+                const float ndcY  = 1.0f - 2.0f * v;
+                const float3& W   = m_launchParams.W;
+                const float3& U   = m_launchParams.U;
+                const float3& V   = m_launchParams.V;
+                const float3& eye = m_launchParams.eye;
+                const float3 rd   = { W.x + ndcX*U.x + ndcY*V.x,
+                                      W.y + ndcX*U.y + ndcY*V.y,
+                                      W.z + ndcX*U.z + ndcY*V.z };
+                const float  len  = sqrtf(rd.x*rd.x + rd.y*rd.y + rd.z*rd.z);
+                const float  inv  = (len > 1e-8f) ? (1.0f / len) : 1.0f;
+                m_orbitPivot = { eye.x + rd.x * inv * dist,
+                                 eye.y + rd.y * inv * dist,
+                                 eye.z + rd.z * inv * dist };
+                m_accumDirty = true;
+            }
         }
 
         // ── 3D gizmo overlay ──────────────────────────────────────────────────

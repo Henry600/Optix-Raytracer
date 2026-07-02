@@ -116,6 +116,7 @@ private:
     GPUBuffer               m_pickSbtHitgroupBuffer;
     OptixShaderBindingTable m_pickSbt = {};
     GPUBuffer               m_pickResultBuffer;
+    GPUBuffer               m_pickDistanceBuffer;
 
     // Instance index → scene node index map; rebuilt by buildSbt() every time the
     // scene graph changes so launchPick() can translate a raw TLAS hit back to a node.
@@ -123,7 +124,7 @@ private:
 
     // Fire a 1×1 pick ray at normalised viewport coordinates (u, v) and return the
     // scene node index of the first hit, or -1 on miss / no scene.
-    int  launchPick(float u, float v);
+    int  launchPick(float u, float v, float* outDistance = nullptr);
     void buildPickSbt();
 
     // Scene materials on device
@@ -195,6 +196,12 @@ private:
     bool   m_prevRmb         = false;
     bool   m_viewportHovered  = false;
     int    m_selectedNodeIdx  = -1;
+
+    // Orbit pivot — world-space point that Ctrl+RMB orbits around.
+    // Updated eagerly by every action that should change it:
+    //   • left-click pick   → selected node's origin (or focus point on miss/camera)
+    //   • middle-click pick → exact 3D hit point under the cursor
+    float3 m_orbitPivot = {};
 
     // 3D gizmo
     ImGuizmo::OPERATION m_gizmoOp   = ImGuizmo::TRANSLATE;

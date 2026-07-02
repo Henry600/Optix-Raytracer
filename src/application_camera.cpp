@@ -51,8 +51,9 @@ void Application::updateCamera()
     m_prevRmb = rmb;
 
     // ── Rotation / Orbit — right-drag while the Viewport panel is under the cursor
-    // Ctrl+RMB: orbit the camera position around the world origin at a fixed radius.
-    //           Camera orientation (yaw/pitch) is left unchanged — no snap.
+    // Ctrl+RMB: orbit around m_orbitPivot, which is kept current by every action
+    //           that should change it (node selection, middle-click focus pick).
+    // Shift+RMB: rotate the environment map azimuthally.
     // Plain RMB: free-look (rotate orientation in place, position fixed).
     // rmbFirstFrame is skipped to avoid a position-jump on the first drag frame.
     if (rmb && !rmbFirstFrame && m_viewportHovered)
@@ -70,17 +71,18 @@ void Application::updateCamera()
         }
         else if (ctrlHeld)
         {
-            // Orbit: move the position along a sphere of the same radius and
-            // derive yaw/pitch from the new position so the camera always looks
-            // at the origin.  Rotation is driven by the mouse delta on the
-            // position — not imposed directly on angles — so there is no snap.
-            const float r = sqrtf(m_camPos.x*m_camPos.x
-                                + m_camPos.y*m_camPos.y
-                                + m_camPos.z*m_camPos.z);
+            const float3 pivot = m_orbitPivot;
+
+            // Express camera position in spherical coords relative to pivot.
+            const float ox = m_camPos.x - pivot.x;
+            const float oy = m_camPos.y - pivot.y;
+            const float oz = m_camPos.z - pivot.z;
+            const float r  = sqrtf(ox*ox + oy*oy + oz*oz);
+
             if (r > 1e-4f)
             {
-                float azimuth   = atan2f(m_camPos.x, m_camPos.z);
-                float elevation = asinf(std::max(-1.0f, std::min(1.0f, m_camPos.y / r)));
+                float azimuth   = atan2f(ox, oz);
+                float elevation = asinf(std::max(-1.0f, std::min(1.0f, oy / r)));
 
                 azimuth   -= dx * m_rotSpeed;
                 elevation += dy * m_rotSpeed;
@@ -88,13 +90,12 @@ void Application::updateCamera()
                 const float kPoleLimit = 1.5533430f;  // 89°
                 elevation = std::max(-kPoleLimit, std::min(kPoleLimit, elevation));
 
-                m_camPos.x = r * cosf(elevation) * sinf(azimuth);
-                m_camPos.y = r * sinf(elevation);
-                m_camPos.z = r * cosf(elevation) * cosf(azimuth);
+                m_camPos.x = pivot.x + r * cosf(elevation) * sinf(azimuth);
+                m_camPos.y = pivot.y + r * sinf(elevation);
+                m_camPos.z = pivot.z + r * cosf(elevation) * cosf(azimuth);
 
-                // Apply the equivalent delta to yaw/pitch (yaw = -azimuth,
-                // pitch = -elevation) so they track the orbit continuously
-                // without snapping to an absolute value.
+                // Apply the same delta to yaw/pitch so the view direction
+                // rotates with the position — no re-centering on the pivot.
                 m_camYaw   += dx * m_rotSpeed;
                 m_camPitch -= dy * m_rotSpeed;
                 m_camPitch  = std::max(-kPoleLimit, std::min(kPoleLimit, m_camPitch));

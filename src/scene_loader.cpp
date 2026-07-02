@@ -9,8 +9,9 @@
 #include "scene_loader.h"
 #include "node_3d.h"
 
-#include <filesystem>
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <string>
 
 // Matrix4x4 helpers (mat4Identity, mat4Multiply, mat4Inverse, mat4RigidInverse,
@@ -348,6 +349,17 @@ static void loadImage(const tinygltf::Image& gltfImage, Scene& outScene)
 
 // ─── Material loading ─────────────────────────────────────────────────────────
 
+// glTF stores baseColorFactor and emissiveFactor in linear space (per spec).
+// Our MaterialData convention is sRGB-encoded values: the shader always calls
+// srgbToLinear3() on mat.albedo/mat.emission before shading, and ImGui's
+// ColorEdit3 treats them as sRGB.  Convert at import time so the round-trip
+// linearise → shade is correct and the UI shows the right perceived colour.
+static float linearToSrgb(float c)
+{
+    c = std::max(0.0f, std::min(1.0f, c));
+    return powf(c, 1.0f / 2.2f);  // matches srgbToLinear(x)=pow(x,2.2) in shader
+}
+
 static MaterialData buildMaterial(
     const tinygltf::Material& gltfMat,
     const tinygltf::Model&    model,
@@ -359,9 +371,9 @@ static MaterialData buildMaterial(
     if (pbr.baseColorFactor.size() == 4)
     {
         mat.albedo = make_float3(
-            static_cast<float>(pbr.baseColorFactor[0]),
-            static_cast<float>(pbr.baseColorFactor[1]),
-            static_cast<float>(pbr.baseColorFactor[2]));
+            linearToSrgb(static_cast<float>(pbr.baseColorFactor[0])),
+            linearToSrgb(static_cast<float>(pbr.baseColorFactor[1])),
+            linearToSrgb(static_cast<float>(pbr.baseColorFactor[2])));
     }
 
     mat.roughness = static_cast<float>(pbr.roughnessFactor);
@@ -379,9 +391,9 @@ static MaterialData buildMaterial(
     if (gltfMat.emissiveFactor.size() == 3)
     {
         mat.emission = make_float3(
-            static_cast<float>(gltfMat.emissiveFactor[0]),
-            static_cast<float>(gltfMat.emissiveFactor[1]),
-            static_cast<float>(gltfMat.emissiveFactor[2]));
+            linearToSrgb(static_cast<float>(gltfMat.emissiveFactor[0])),
+            linearToSrgb(static_cast<float>(gltfMat.emissiveFactor[1])),
+            linearToSrgb(static_cast<float>(gltfMat.emissiveFactor[2])));
     }
 
     if (gltfMat.emissiveTexture.index >= 0)

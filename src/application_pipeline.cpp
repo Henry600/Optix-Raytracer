@@ -469,7 +469,7 @@ void Application::buildPickSbt()
 
 // ─── Pick launch ─────────────────────────────────────────────────────────────
 
-int Application::launchPick(float u, float v)
+int Application::launchPick(float u, float v, float* outDistance)
 {
     if (!m_scene->hasAccel() || m_instanceToNode.empty() || !m_pickSbt.raygenRecord)
     {
@@ -480,10 +480,15 @@ int Application::launchPick(float u, float v)
     {
         m_pickResultBuffer.alloc(sizeof(uint32_t));
     }
+    if (!m_pickDistanceBuffer.ptr())
+    {
+        m_pickDistanceBuffer.alloc(sizeof(float));
+    }
 
-    m_launchParams.pickU      = u;
-    m_launchParams.pickV      = v;
-    m_launchParams.pickResult = m_pickResultBuffer.typedPtr<uint32_t>();
+    m_launchParams.pickU         = u;
+    m_launchParams.pickV         = v;
+    m_launchParams.pickResult    = m_pickResultBuffer.typedPtr<uint32_t>();
+    m_launchParams.pickDistance  = m_pickDistanceBuffer.typedPtr<float>();
     m_launchParamsBuffer.upload(&m_launchParams, sizeof(LaunchParams));
 
     OPTIX_CHECK(optixLaunch(
@@ -493,10 +498,18 @@ int Application::launchPick(float u, float v)
         1, 1, 1));
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    m_launchParams.pickResult = nullptr;
+    m_launchParams.pickResult   = nullptr;
+    m_launchParams.pickDistance = nullptr;
 
     uint32_t rawIdx = 0xFFFFFFFFu;
     m_pickResultBuffer.download(&rawIdx, sizeof(uint32_t));
+
+    if (outDistance)
+    {
+        float dist = -1.0f;
+        m_pickDistanceBuffer.download(&dist, sizeof(float));
+        *outDistance = (dist > 0.0f) ? dist : -1.0f;
+    }
 
     if (rawIdx == 0xFFFFFFFFu || rawIdx >= static_cast<uint32_t>(m_instanceToNode.size()))
     {
