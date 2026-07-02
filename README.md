@@ -15,20 +15,23 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 - **Stochastic refraction** — rough dielectric transmission with Snell's law and GGX microfacet normal sampling; Beer-Lambert volumetric absorption for coloured glass (absorption accumulates over distance, not at the surface); **nested dielectrics** — a per-path medium stack tracks the enclosing material IOR and absorption so overlapping or nested glass objects refract and attenuate correctly; **thin-walled glass** mode skips volume absorption and tints NEE shadow rays with the glass colour for correct single-surface light filtering
 - **Environment lighting** — equirectangular EXR maps (`.exr`, all codecs: NONE / RLE / ZIP / PIZ / PXR24 / B44 / DWAA / DWAB) or Radiance HDR maps (`.hdr`) or procedural sky gradient, with rotation and exposure (EV) controls; NaN and inf pixels are clamped at load time (NaN → 0, inf → 65504) so over-bright sources never corrupt thumbnails or the CDF
 - **HDRI importance sampling** — 2D luminance CDF built at load time; NEE fires shadow rays toward bright env-map regions at every diffuse and specular (GGX) bounce; MIS power heuristic with the GGX VNDF PDF prevents double-counting on specular escape paths
+- **Emissive mesh / implicit NEE with MIS** — direct illumination from emissive surfaces is sampled at every diffuse and specular bounce; area-to-solid-angle Jacobian handles non-uniform scale correctly; MIS power heuristic combines emissive NEE, HDRI NEE, and BSDF strategies so emissive geometry integrates with the same noise-reducing efficiency as the environment map
 - **Thin-lens depth of field** — focal length, sensor size, f-stop, focus distance, and adjustable bokeh edge bias
 - **scRGB FP16 swapchain with automatic SDR fallback** — on Windows with HDR enabled, presents through `VK_FORMAT_R16G16B16A16_SFLOAT` + `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`; on displays without HDR, automatically falls back to `VK_FORMAT_B8G8R8A8_UNORM` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` with Reinhard tone-mapping and gamma encoding; no configuration required
 - **HDR output toggle** — available on HDR displays (scRGB swapchain active); when off, Reinhard tone-maps accumulated radiance into SDR range; when on, radiance passes through unclamped so highlights can exceed paper white; automatically disabled with a *(no HDR display)* label on SDR displays
 - **OptiX AI denoiser** — normal + albedo guide layers, configurable denoise interval, keeps the last denoised frame while accumulating
 
 ### Scene
-- **glTF 2.0 / GLB loading** — meshes, PBR materials (including `KHR_materials_transmission`, `KHR_materials_ior`, `KHR_materials_clearcoat`), base-colour textures, cameras, scene hierarchy
+- **glTF 2.0 / GLB loading** — meshes, PBR materials (including `KHR_materials_transmission`, `KHR_materials_ior`, `KHR_materials_clearcoat`, `KHR_materials_emissive_strength`), base-colour textures, cameras, scene hierarchy; `baseColorFactor` and `emissiveFactor` are converted from the linear space mandated by the glTF spec to sRGB at import time, matching the internal `MaterialData` convention
 - **Scene graph** — full glTF node hierarchy preserved as a `Node3D` tree (`MeshNode`, `CameraNode`, `GroupNode`, `ImplicitNode`)
 - **Node transforms applied to TLAS** — mesh instances positioned using accumulated world-space transforms from the node hierarchy
 - **Live transform editing** — 3D gizmo (ImGuizmo) overlaid on the viewport for interactive Translate / Rotate / Scale in Local or World space; raw matrix fields remain available for precise values; TLAS-only rebuild keeps BLASes intact
 - **Analytic implicit shapes** — `ImplicitNode` renders Sphere, Box, or Cylinder via OptiX custom primitives (`OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES`); shapes are canonical unit forms in local space so the node's TRS transform controls size and placement; all full PBR materials (including transmission and clearcoat) apply identically to implicit shapes and mesh geometry
 
 ### Camera
-- **Free-fly camera** — WASD (move), EQ (up/down), right-drag (look), Ctrl+drag (orbit origin), Shift+drag (rotate environment)
+- **Free-fly camera** — WASD (move), EQ (up/down), right-drag (look), Ctrl+drag (orbit), Shift+drag (rotate environment)
+- **Smart orbit pivot** — Ctrl+RMB orbits around a persistent world-space pivot updated by every relevant action: left-click selection sets it to the selected node's origin; middle-click sets it to the exact 3D surface hit under the cursor; falls back to the camera focus point when nothing is selected
+- **Middle-click focus** — shoots an OptiX pick ray and sets the camera focus distance to the hit depth and the orbit pivot to the 3D hit point in one gesture
 - **Physical camera parameters** — focal length (mm), sensor size (mm), f-stop, and focus distance drive the FOV and depth of field
 - **glTF camera import** — imported yFov converted to focal length at load time
 
@@ -155,12 +158,13 @@ cmake --build build --config Release --parallel
 | Input | Action |
 |---|---|
 | **RMB drag** | Free-look (rotate camera orientation) |
-| **Ctrl + RMB drag** | Orbit camera around world origin |
+| **Ctrl + RMB drag** | Orbit camera around the current pivot (set by node selection or middle-click) |
 | **Shift + RMB drag** | Rotate environment map azimuthally |
 | **W / S** | Move forward / backward |
 | **A / D** | Strafe left / right |
 | **E / Q** | Move up / down |
-| **Left-click in Viewport** | Select the clicked scene node via OptiX pick ray; click empty space to deselect |
+| **Left-click in Viewport** | Select the clicked scene node via OptiX pick ray; sets orbit pivot to node origin; click empty space to deselect |
+| **Middle-click in Viewport** | Set camera focus distance to the clicked surface depth; sets orbit pivot to the 3D hit point |
 | **Click node in Scene Graph** | Select node; 3D gizmo appears in Viewport |
 | **Drag gizmo handle** | Translate / rotate / scale the selected node |
 | **Translate / Rotate / Scale buttons** | Switch gizmo operation (Node Properties panel) |
