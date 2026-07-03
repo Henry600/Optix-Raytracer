@@ -41,7 +41,7 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 | **Viewport** | Live rendered image, resizes dynamically; left-click to select scene nodes via OptiX pick ray |
 | **Raytracer** | GPU stats, sample count, denoiser toggle, environment controls, HDR output toggle, paper-white slider (active when Windows HDR is on) |
 | **Resources** | Collapsible sub-categories: **Materials** (per-material PBR editor with albedo swatch preview) and **Textures** (loaded scene textures with dimensions and format) |
-| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; drag to reorder or reparent nodes; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
+| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; drag to reorder or reparent nodes; **eye icon** (right-aligned on each row) toggles node visibility — hiding a node excludes its entire subtree from the TLAS, SBT, and emissive light list; hidden nodes are dimmed in the tree; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
 | **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
 
@@ -166,6 +166,7 @@ cmake --build build --config Release --parallel
 | **Left-click in Viewport** | Select the clicked scene node via OptiX pick ray; sets orbit pivot to node origin; click empty space to deselect |
 | **Middle-click in Viewport** | Set camera focus distance to the clicked surface depth; sets orbit pivot to the 3D hit point |
 | **Click node in Scene Graph** | Select node; 3D gizmo appears in Viewport |
+| **Eye icon in Scene Graph** | Toggle node visibility; hides the entire subtree from rendering without deleting it |
 | **Drag gizmo handle** | Translate / rotate / scale the selected node |
 | **Translate / Rotate / Scale buttons** | Switch gizmo operation (Node Properties panel) |
 | **1 / 2 / 3** | Keyboard shortcut: Scale / Rotate / Translate |
@@ -226,7 +227,7 @@ Optix-Raytracer/
     ├── matrix4x4.h                 Row-major Matrix4x4 with multiply, inverse, and
     │                               column-major converters for ImGuizmo interop
     ├── camera.h                    Camera struct: transform, FOV, DoF parameters
-    ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode; each node carries a cached worldTransform (maintained by Scene)
+    ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode; each node carries a cached worldTransform (maintained by Scene) and a `visible` flag (false = excluded from TLAS, SBT, and emissive lights)
     ├── implicit_node.h             ImplicitNode (Sphere / Box / Cylinder) with shape type enum and material index
     ├── scene.h/.cpp                Scene container: meshes, materials, textures, node tree; updateWorldTransforms / updateAllWorldTransforms keep cached world matrices in sync; deleteSubtree removes a node and its descendants
     ├── mesh.h                      Host-side mesh: separate vertex attribute arrays

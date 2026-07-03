@@ -18,6 +18,7 @@ public:
     Matrix4x4        worldTransform;   // read-only: maintained by Scene::updateWorldTransforms
     int              parent   = -1;    // index in Scene::m_nodes; -1 = root
     std::vector<int> children;         // indices in Scene::m_nodes
+    bool             visible  = true;  // false = excluded from TLAS and rendering
 
     virtual ~Node3D() = default;
 

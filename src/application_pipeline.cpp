@@ -61,6 +61,7 @@ static void walkSceneInstances(const Scene& scene, std::vector<InstanceInfo>& ou
     std::function<void(int)> walk = [&](int nodeIdx)
     {
         const Node3D& node = *allNodes[nodeIdx];
+        if (!node.visible) { return; }  // must match Accel::buildTlasPhase walk exactly
         if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
         {
             for (int j = 0; j < static_cast<int>(mn->meshIndices.size()); ++j)

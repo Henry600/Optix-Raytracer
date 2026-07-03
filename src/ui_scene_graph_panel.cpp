@@ -38,11 +38,12 @@ enum class DropZone { Before, Into, After };
 
 struct NodeAction
 {
-    int      duplicateNodeIdx = -1;
-    int      deleteNodeIdx    = -1;
-    int      dragSrcIdx       = -1;
-    int      dragDstIdx       = -1;
-    DropZone dragZone         = DropZone::Into;
+    int      duplicateNodeIdx    = -1;
+    int      deleteNodeIdx       = -1;
+    int      dragSrcIdx          = -1;
+    int      dragDstIdx          = -1;
+    DropZone dragZone            = DropZone::Into;
+    int      toggleVisibilityIdx = -1;
 };
 
 static void drawNode3D(const Scene& scene, int nodeIdx,
@@ -79,9 +80,20 @@ static void drawNode3D(const Scene& scene, int nodeIdx,
     const ImVec2 itemRectMin = ImGui::GetItemRectMin();
     const ImVec2 itemRectMax = ImGui::GetItemRectMax();
 
+    // Pre-compute eye button rect so the selection click can be guarded.
+    // No IsWindowHovered() guard: the tooltip shown on hover makes the tooltip
+    // window the HoveredWindow on the next frame, which would cause IsWindowHovered()
+    // to return false and silently block every click.
+    const float  eyeW       = ImGui::GetFrameHeight();
+    const ImVec2 eyeMin     = { itemRectMax.x - eyeW, itemRectMin.y };
+    const ImVec2 eyeMax     = itemRectMax;
+    const bool   eyeHovered = ImGui::IsMouseHoveringRect(eyeMin, eyeMax);
+
     // Check click and context menu immediately after TreeNodeEx — before
     // SameLine adds other items that would shift the "last item" reference.
-    if (ImGui::IsItemClicked())
+    // Skip selection when the eye button is hovered so visibility toggles
+    // don't also change the selected node.
+    if (ImGui::IsItemClicked() && !eyeHovered)
     {
         selectedNodeIdx = nodeIdx;
     }
@@ -154,12 +166,55 @@ static void drawNode3D(const Scene& scene, int nodeIdx,
     }
 
     // Draw colored icon and plain name on the same row as the tree arrow.
+    // Dim both when the node is hidden so the state is obvious at a glance.
+    const float visAlpha = node.visible ? 1.0f : 0.35f;
     ImGui::SameLine(0.0f, 2.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, iconCol);
+    ImGui::PushStyleColor(ImGuiCol_Text,
+        ImVec4(iconCol.x, iconCol.y, iconCol.z, iconCol.w * visAlpha));
     ImGui::TextUnformatted(icon);
     ImGui::PopStyleColor();
     ImGui::SameLine(0.0f, 4.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, visAlpha));
     ImGui::TextUnformatted(name.c_str());
+    ImGui::PopStyleColor();
+
+    // Visibility eye — rendered via draw list so it adds no ImGui item and
+    // leaves row spacing completely unaffected.  IsMouseHoveringRect bypasses
+    // HoveredId (which SpanAvailWidth would otherwise block) and renders on
+    // top of the selection highlight because draw-list calls post-date the
+    // tree node's own draw calls.
+    {
+        ImDrawList*  dl       = ImGui::GetWindowDrawList();
+        ImFont*      font     = ImGui::GetFont();
+        const float  fontSize = ImGui::GetFontSize();
+        const char*  icon     = node.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH;
+
+        if (eyeHovered)
+        {
+            dl->AddRectFilled(eyeMin, eyeMax,
+                ImGui::GetColorU32(ImVec4(1.f, 1.f, 1.f, 0.10f)), 3.0f);
+        }
+
+        const ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, icon);
+        const ImVec2 textPos  = {
+            eyeMin.x + (eyeW - textSize.x) * 0.5f,
+            eyeMin.y + (eyeW - textSize.y) * 0.5f - 3.0f  // glyph sits slightly low in its cell
+        };
+        const ImVec4 glyphColor = node.visible
+            ? ImVec4(1.f, 1.f, 1.f, eyeHovered ? 0.70f : 0.30f)
+            : ImVec4(1.f, 0.55f, 0.55f, eyeHovered ? 1.0f : 0.90f);
+        dl->AddText(font, fontSize, textPos,
+            ImGui::ColorConvertFloat4ToU32(glyphColor), icon);
+
+        if (eyeHovered)
+        {
+            ImGui::SetTooltip(node.visible ? "Hide" : "Show");
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                action.toggleVisibilityIdx = nodeIdx;
+            }
+        }
+    }
 
     if (open && !node.children.empty())
     {
@@ -344,6 +399,22 @@ void Application::drawSceneGraphPanel()
                 m_selectedNodeIdx = src;
                 m_accumDirty      = true;
             }
+        }
+
+        if (action.toggleVisibilityIdx >= 0)
+        {
+            m_scene->nodeAt(action.toggleVisibilityIdx).visible ^= true;
+            try
+            {
+                m_scene->buildAccel(m_optixContext);
+            }
+            catch (const std::exception& e)
+            {
+                m_loadError = std::string("AS build failed: ") + e.what();
+            }
+            buildSbt();
+            uploadEmissiveLights();
+            m_accumDirty = true;
         }
     }
 

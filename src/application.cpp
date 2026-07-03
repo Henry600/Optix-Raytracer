@@ -600,18 +600,24 @@ bool Application::tick()
         }
 
         // ── GPU launch ────────────────────────────────────────────────────────
-        m_launchParamsBuffer.upload(&m_launchParams, sizeof(LaunchParams));
+        // Skip when no geometry is visible: traversable == 0 means the TLAS is
+        // empty (all nodes hidden), and launching against a null traversable
+        // causes an illegal memory access on the GPU.
+        if (m_launchParams.traversable != 0)
+        {
+            m_launchParamsBuffer.upload(&m_launchParams, sizeof(LaunchParams));
 
-        OPTIX_CHECK(optixLaunch(
-            m_pipeline, nullptr,
-            m_launchParamsBuffer.ptr(), sizeof(LaunchParams),
-            &m_sbt,
-            static_cast<unsigned int>(m_viewportWidth),
-            static_cast<unsigned int>(m_viewportHeight),
-            1));
+            OPTIX_CHECK(optixLaunch(
+                m_pipeline, nullptr,
+                m_launchParamsBuffer.ptr(), sizeof(LaunchParams),
+                &m_sbt,
+                static_cast<unsigned int>(m_viewportWidth),
+                static_cast<unsigned int>(m_viewportHeight),
+                1));
 
-        CUDA_CHECK(cudaDeviceSynchronize());
-        ++m_sampleCount;
+            CUDA_CHECK(cudaDeviceSynchronize());
+            ++m_sampleCount;
+        }
 
         // ── Denoiser post-process ─────────────────────────────────────────────
         const bool runDenoiser = m_denoiserEnabled

@@ -12,5 +12,7 @@
 #define ICON_FA_CIRCLE       "\xef\x84\x91"  // U+F111  implicit sphere
 #define ICON_FA_SQUARE       "\xef\x83\x88"  // U+F0C8  implicit box
 #define ICON_FA_DATABASE     "\xef\x87\x80"  // U+F1C0  implicit cylinder
+#define ICON_FA_EYE          "\xef\x81\xae"  // U+F06E  visibility on
+#define ICON_FA_EYE_SLASH    "\xef\x81\xb0"  // U+F070  visibility off
 
 #endif // OPTIX_RAYTRACER_ICONS_H

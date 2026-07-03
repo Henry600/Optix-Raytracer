@@ -1147,13 +1147,17 @@ extern "C" __global__ void __raygen__renderFrame()
 
                 if (vtx.thinWalled)
                 {
-                    // Zero-thickness surface: front and back refractions cancel.
-                    // Pass the ray through with no direction change and no Beer-Lambert
-                    // absorption (there is no medium interior to accumulate through).
-                    // Nf already faces the incoming ray (computed above), so -Nf always
-                    // points to the far side regardless of which face was hit.
+                    // Zero-thickness surface: front and back refractions cancel so
+                    // there is no medium interior and no Beer-Lambert absorption.
+                    // Apply albedo as a flat transmission tint — consistent with how
+                    // the any-hit shader filters NEE shadow rays through thin glass.
+                    // vtx.albedo is already in linear space (linearised in closest-hit).
+                    throughput.x *= vtx.albedo.x;
+                    throughput.y *= vtx.albedo.y;
+                    throughput.z *= vtx.albedo.z;
+                    // Nf faces the incoming ray, so -Nf steps to the far side.
                     rayOrig = vtx.pos - Nf * 1e-3f;
-                    // rayDir and absorb are intentionally left unchanged.
+                    // rayDir and absorb unchanged — medium is unaffected.
                 }
                 else
                 {

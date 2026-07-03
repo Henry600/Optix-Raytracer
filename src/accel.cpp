@@ -270,6 +270,8 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
         const Node3D&    node  = *allNodes[nodeIdx];
         const Matrix4x4& world = node.worldTransform;
 
+        if (!node.visible) { return; }  // skip entire subtree
+
         if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
         {
             for (int j = 0; j < static_cast<int>(mn->meshIndices.size()); ++j)

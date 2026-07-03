@@ -312,6 +312,8 @@ void Scene::uploadEmissiveLights()
     {
         const Node3D& node = *m_nodes[nodeIdx];
 
+        if (!node.visible) { return; }  // skip entire subtree, matching TLAS walk
+
         if (const MeshNode* mn = dynamic_cast<const MeshNode*>(&node))
         {
             for (int j = 0; j < static_cast<int>(mn->meshIndices.size()); ++j)
