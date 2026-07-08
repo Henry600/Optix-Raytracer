@@ -164,6 +164,38 @@ FetchContent_Declare(nfd
 )
 FetchContent_MakeAvailable(nfd)
 
+# libwebp v1.6.0 — lossless WebP decoding for SOG gaussian splat images.
+# Only the codec library is needed; all command-line tools are disabled.
+FetchContent_Declare(libwebp
+    GIT_REPOSITORY https://github.com/webmproject/libwebp.git
+    GIT_TAG        v1.6.0
+    GIT_SHALLOW    TRUE
+)
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP      OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP      OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP   OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP   OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP      OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO   OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX    OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS     OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(libwebp)
+
+# miniz 3.0.2 — ZIP archive reading for bundled .sog files.  The release
+# amalgamation (miniz.c + miniz.h) has no CMakeLists.txt, so the STATIC
+# target is created manually — same pattern as ImGui above.
+FetchContent_Declare(miniz
+    URL https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+)
+FetchContent_GetProperties(miniz)
+if(NOT miniz_POPULATED)
+    FetchContent_Populate(miniz)
+endif()
+add_library(miniz STATIC ${miniz_SOURCE_DIR}/miniz.c)
+target_include_directories(miniz PUBLIC ${miniz_SOURCE_DIR})
+target_compile_options(miniz PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/W0>)
+
 # FontAwesome 6 Free Solid — icon glyphs merged into the ImGui font atlas.
 # Downloaded once at configure time into fonts/; copied to the executable
 # directory at build time (see src/CMakeLists.txt).

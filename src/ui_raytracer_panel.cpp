@@ -55,6 +55,18 @@ void Application::drawRaytracerPanel()
     }
 
     ImGui::SameLine();
+    if (ImGui::Button("Open Splat..."))
+    {
+        nfdu8char_t*    outPath = nullptr;
+        nfdfilteritem_t filters[] = { { "Gaussian Splat", "sog,json" } };
+        if (NFD_OpenDialogU8(&outPath, filters, 1, nullptr) == NFD_OKAY)
+        {
+            loadSplat(reinterpret_cast<const char*>(outPath));
+            NFD_FreePathU8(outPath);
+        }
+    }
+
+    ImGui::SameLine();
     if (ImGui::Button("Open Env Map..."))
     {
         nfdu8char_t*    outPath = nullptr;

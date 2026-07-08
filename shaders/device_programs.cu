@@ -1735,6 +1735,147 @@ extern "C" __global__ void __closesthit__implicit()
     vtx->instanceId = optixGetInstanceId();  // used by emissive NEE MIS
 }
 
+// ─── Gaussian splats: debug ellipsoid visualization ──────────────────────────
+// Each gaussian is intersected as its 3σ ellipsoid and shaded as a flat
+// emissive surface with its DC (SH band 0) color.  This verifies the BLAS,
+// TLAS instancing, and SBT wiring end-to-end; proper 3DGRT-style volumetric
+// alpha compositing replaces this in a follow-up step.
+
+extern "C" __global__ void __intersection__splat()
+{
+    const SplatSetData& sd =
+        *reinterpret_cast<const SplatSetData*>(optixGetSbtDataPointer());
+
+    const unsigned int prim = optixGetPrimitiveIndex();
+    const float4 mo = sd.meanOpacity[prim];
+
+    if (mo.w < 0.01f)
+    {
+        return;  // cull near-invisible gaussians
+    }
+
+    const float4 q = sd.quat[prim];   // (x, y, z, w)
+    const float4 s = sd.scale[prim];
+
+    // Rotation matrix rows from the unit quaternion
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+
+    const float3 r0 = make_float3(1.0f - 2.0f * (yy + zz), 2.0f * (xy - wz),        2.0f * (xz + wy));
+    const float3 r1 = make_float3(2.0f * (xy + wz),        1.0f - 2.0f * (xx + zz), 2.0f * (yz - wx));
+    const float3 r2 = make_float3(2.0f * (xz - wy),        2.0f * (yz + wx),        1.0f - 2.0f * (xx + yy));
+
+    const float3 invS = make_float3(1.0f / fmaxf(s.x, 1e-8f),
+                                    1.0f / fmaxf(s.y, 1e-8f),
+                                    1.0f / fmaxf(s.z, 1e-8f));
+
+    const float3 ro = optixGetObjectRayOrigin();
+    const float3 rd = optixGetObjectRayDirection();
+    const float3 oc = make_float3(ro.x - mo.x, ro.y - mo.y, ro.z - mo.z);
+
+    // Into the gaussian's unit frame: u = diag(1/s) · Rᵀ · v.
+    // Rᵀ rows are R columns: (Rᵀ v)_k = dot(col_k, v).
+    const float3 ou = make_float3(
+        (r0.x * oc.x + r1.x * oc.y + r2.x * oc.z) * invS.x,
+        (r0.y * oc.x + r1.y * oc.y + r2.y * oc.z) * invS.y,
+        (r0.z * oc.x + r1.z * oc.y + r2.z * oc.z) * invS.z);
+    const float3 du = make_float3(
+        (r0.x * rd.x + r1.x * rd.y + r2.x * rd.z) * invS.x,
+        (r0.y * rd.x + r1.y * rd.y + r2.y * rd.z) * invS.y,
+        (r0.z * rd.x + r1.z * rd.y + r2.z * rd.z) * invS.z);
+
+    // |ou + t·du|² = 9  (3σ boundary), solved in half-b form
+    const float a = devDot(du, du);
+    if (a < 1e-12f)
+    {
+        return;
+    }
+    const float b    = devDot(ou, du);
+    const float c    = devDot(ou, ou) - 9.0f;
+    const float disc = b * b - a * c;
+    if (disc < 0.0f)
+    {
+        return;
+    }
+
+    const float sq   = sqrtf(disc);
+    const float tMin = optixGetRayTmin();
+    const float tMax = optixGetRayTmax();
+
+    float t = (-b - sq) / a;
+    if (t < tMin || t > tMax)
+    {
+        t = (-b + sq) / a;
+        if (t < tMin || t > tMax)
+        {
+            return;
+        }
+    }
+
+    // Ellipsoid gradient: ∇f ∝ R · diag(1/s) · u_hit  (object space, unnormalized)
+    const float3 nu = make_float3((ou.x + t * du.x) * invS.x,
+                                  (ou.y + t * du.y) * invS.y,
+                                  (ou.z + t * du.z) * invS.z);
+    const float3 nObj = make_float3(devDot(r0, nu), devDot(r1, nu), devDot(r2, nu));
+
+    optixReportIntersection(t, 0,
+        __float_as_uint(nObj.x),
+        __float_as_uint(nObj.y),
+        __float_as_uint(nObj.z));
+}
+
+// Only reached by NEE shadow rays (radiance rays disable anyhit).  Splats do
+// not occlude shadow rays in the debug visualization; volumetric transmittance
+// arrives with the compositing step.
+extern "C" __global__ void __anyhit__splat()
+{
+    optixIgnoreIntersection();
+}
+
+extern "C" __global__ void __closesthit__splat()
+{
+    PathVertex* vtx = unpackVertex(optixGetPayload_0(), optixGetPayload_1());
+
+    const SplatSetData& sd =
+        *reinterpret_cast<const SplatSetData*>(optixGetSbtDataPointer());
+
+    const unsigned int prim = optixGetPrimitiveIndex();
+
+    const float3 n_obj = make_float3(
+        __uint_as_float(optixGetAttribute_0()),
+        __uint_as_float(optixGetAttribute_1()),
+        __uint_as_float(optixGetAttribute_2()));
+
+    vtx->N   = devNormalize(optixTransformNormalFromObjectToWorldSpace(n_obj));
+    vtx->t   = optixGetRayTmax();
+    vtx->pos = optixGetWorldRayOrigin() + optixGetWorldRayDirection() * vtx->t;
+
+    // DC color: 0.5 + SH_C0 · f_dc, display-referred by 3DGS convention —
+    // linearize to match the renderer's working space.
+    const float4 fdc   = sd.sh0[prim];
+    const float  SH_C0 = 0.28209479177387814f;
+    const float3 color = make_float3(fmaxf(0.5f + SH_C0 * fdc.x, 0.0f),
+                                     fmaxf(0.5f + SH_C0 * fdc.y, 0.0f),
+                                     fmaxf(0.5f + SH_C0 * fdc.z, 0.0f));
+
+    vtx->albedo             = make_float3(0.0f, 0.0f, 0.0f);
+    vtx->emission           = srgbToLinear3(color);
+    vtx->roughness          = 1.0f;
+    vtx->metallic           = 0.0f;
+    vtx->transmission       = 0.0f;
+    vtx->ior                = 1.5f;
+    vtx->absorptionDistance = 1.0f;
+    vtx->scatteringCoeff    = make_float3(0.0f, 0.0f, 0.0f);
+    vtx->scatteringAnisotropy = 0.0f;
+    vtx->clearcoat          = 0.0f;
+    vtx->clearcoatRoughness = 0.0f;
+    vtx->thinWalled         = 0;
+
+    vtx->hit        = 1;
+    vtx->instanceId = ~0u;  // splats are never in the emissive-lights array
+}
+
 // ─── 1px picking ─────────────────────────────────────────────────────────────
 // Fires a single ray from normalised screen-space (pickU, pickV) and writes
 // the TLAS instance index of the closest hit into pickResult.  0xFFFFFFFF = miss.

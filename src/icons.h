@@ -14,5 +14,6 @@
 #define ICON_FA_DATABASE     "\xef\x87\x80"  // U+F1C0  implicit cylinder
 #define ICON_FA_EYE          "\xef\x81\xae"  // U+F06E  visibility on
 #define ICON_FA_EYE_SLASH    "\xef\x81\xb0"  // U+F070  visibility off
+#define ICON_FA_BRAILLE      "\xef\x8a\xa1"  // U+F2A1  gaussian splat node (dot cloud)
 
 #endif // OPTIX_RAYTRACER_ICONS_H

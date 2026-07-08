@@ -9,8 +9,9 @@
 
 #include <vector>
 
-// Forward declaration — Accel.cpp includes Scene.h
+// Forward declarations — Accel.cpp includes the full headers
 class Scene;
+struct GaussianSplatData;
 
 // Manages the OptiX acceleration structure for a loaded scene:
 //   - one BLAS (bottom-level AS) per mesh, built with compaction
@@ -48,6 +49,12 @@ public:
 
     // Shared BLAS used by all implicit shape TLAS instances.
     OptixTraversableHandle implicitBlas() const { return m_implicitBlas; }
+
+    // Per-splat-dataset BLAS handle; 0 when not built (e.g. GPU upload failed).
+    OptixTraversableHandle splatBlas(size_t idx) const
+    {
+        return (idx < m_splatBlas.size()) ? m_splatBlas[idx].blas : 0;
+    }
 
     // Per-mesh device pointers needed to fill SBT hit group records.
     struct MeshDevicePtrs
@@ -89,6 +96,17 @@ private:
     GPUBuffer              m_implicitOutputAS;
     OptixTraversableHandle m_implicitBlas = 0;
 
+    // One custom-primitive BLAS per gaussian splat dataset — one AABB per
+    // gaussian (mean ± 3σ of the rotated, scaled covariance ellipsoid).
+    // Indexed parallel to Scene::splats().
+    struct SplatBlasBuffers
+    {
+        GPUBuffer              aabbs;      // device OptixAabb array
+        GPUBuffer              outputAS;   // compacted BLAS output buffer
+        OptixTraversableHandle blas = 0;
+    };
+    std::vector<SplatBlasBuffers> m_splatBlas;
+
     // Uploads vertex/index data and builds one BLAS with compaction.
     // Writes to buffers.positions, buffers.indices, buffers.outputAS, buffers.blas.
     static void buildBlas(
@@ -99,6 +117,13 @@ private:
 
     // Builds the shared custom-primitive BLAS for implicit shapes.
     void buildImplicitBlas(OptixDeviceContext ctx);
+
+    // Computes per-gaussian AABBs on the CPU, uploads them, and builds one
+    // compacted custom-primitive BLAS for the dataset.
+    static void buildSplatBlas(
+        OptixDeviceContext       ctx,
+        SplatBlasBuffers&        buffers,
+        const GaussianSplatData& splat);
 
     // Frees old TLAS resources, recomputes world transforms from the scene node
     // hierarchy, then rebuilds the TLAS. Called by both build() and rebuildTlas().

@@ -5,11 +5,14 @@
 // output buffer are kept alive in MeshBuffers / m_tlasOutputBuffer so OptiX
 // can continue to traverse them during rendering.
 #include "accel.h"
+#include "gaussian_splat.h"
 #include "implicit_node.h"
 #include "matrix4x4.h"
 #include "node_3d.h"
 #include "scene.h"
+#include "splat_node.h"
 
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
@@ -52,6 +55,7 @@ void Accel::destroy()
     m_implicitAabbBuf.free();
     m_implicitOutputAS.free();
     m_implicitBlas = 0;
+    m_splatBlas.clear();  // GPUBuffer members free device memory via their destructors
 }
 
 // ─── Accel::buildBlas ─────────────────────────────────────────────────────────
@@ -184,6 +188,113 @@ void Accel::buildImplicitBlas(OptixDeviceContext ctx)
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+// ─── Accel::buildSplatBlas ────────────────────────────────────────────────────
+
+void Accel::buildSplatBlas(
+    OptixDeviceContext       ctx,
+    SplatBlasBuffers&        buffers,
+    const GaussianSplatData& splat)
+{
+    // ── Per-gaussian AABBs in splat-local space ───────────────────────────────
+    // The gaussian's 3σ ellipsoid is x = μ + R · diag(s) · u with |u| = 3.
+    // Its AABB half-extent along axis j is 3·‖row_j(R · diag(s))‖.
+    std::vector<OptixAabb> aabbs(splat.count);
+
+    for (uint32_t i = 0; i < splat.count; ++i)
+    {
+        const float3& p = splat.positions[i];
+        const float4& q = splat.rotations[i];  // (x, y, z, w)
+        const float3& s = splat.scales[i];
+
+        // Rotation matrix rows from the unit quaternion
+        const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+        const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+        const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+
+        const float r[3][3] = {
+            { 1.0f - 2.0f * (yy + zz), 2.0f * (xy - wz),        2.0f * (xz + wy)        },
+            { 2.0f * (xy + wz),        1.0f - 2.0f * (xx + zz), 2.0f * (yz - wx)        },
+            { 2.0f * (xz - wy),        2.0f * (yz + wx),        1.0f - 2.0f * (xx + yy) },
+        };
+
+        float half[3];
+        for (int j = 0; j < 3; ++j)
+        {
+            const float mx = r[j][0] * s.x;
+            const float my = r[j][1] * s.y;
+            const float mz = r[j][2] * s.z;
+            half[j] = 3.0f * std::sqrt(mx * mx + my * my + mz * mz);
+        }
+
+        aabbs[i] = { p.x - half[0], p.y - half[1], p.z - half[2],
+                     p.x + half[0], p.y + half[1], p.z + half[2] };
+    }
+
+    buffers.aabbs.allocAndUpload(aabbs.data(), aabbs.size() * sizeof(OptixAabb));
+
+    // ── Custom-primitive BLAS with compaction ─────────────────────────────────
+    const uint32_t    buildFlags[] = { OPTIX_GEOMETRY_FLAG_NONE };
+    const CUdeviceptr aabbPtr      = buffers.aabbs.ptr();
+
+    OptixBuildInput buildInput = {};
+    buildInput.type            = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
+    auto& cp                   = buildInput.customPrimitiveArray;
+    cp.aabbBuffers             = &aabbPtr;
+    cp.numPrimitives           = splat.count;
+    cp.strideInBytes           = sizeof(OptixAabb);
+    cp.flags                   = buildFlags;
+    cp.numSbtRecords           = 1;  // all gaussians share one record; primitive index selects
+    cp.sbtIndexOffsetBuffer    = 0;
+
+    OptixAccelBuildOptions opts = {};
+    opts.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION
+                    | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    opts.operation  = OPTIX_BUILD_OPERATION_BUILD;
+
+    OptixAccelBufferSizes sizes = {};
+    OPTIX_CHECK(optixAccelComputeMemoryUsage(ctx, &opts, &buildInput, 1, &sizes));
+
+    GPUBuffer tempBuffer;
+    tempBuffer.alloc(sizes.tempSizeInBytes);
+
+    GPUBuffer compactedSizeSlot;
+    compactedSizeSlot.alloc(sizeof(uint64_t));
+
+    OptixAccelEmitDesc emitDesc = {};
+    emitDesc.type   = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
+    emitDesc.result = compactedSizeSlot.ptr();
+
+    buffers.outputAS.alloc(sizes.outputSizeInBytes);
+
+    OPTIX_CHECK(optixAccelBuild(
+        ctx, nullptr,
+        &opts, &buildInput, 1,
+        tempBuffer.ptr(),       tempBuffer.size(),
+        buffers.outputAS.ptr(), buffers.outputAS.size(),
+        &buffers.blas,
+        &emitDesc, 1));
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    uint64_t compactedSize = 0;
+    compactedSizeSlot.download(&compactedSize, sizeof(uint64_t));
+
+    if (compactedSize < sizes.outputSizeInBytes)
+    {
+        GPUBuffer compactedAS;
+        compactedAS.alloc(compactedSize);
+
+        OPTIX_CHECK(optixAccelCompact(ctx, nullptr,
+                                      buffers.blas,
+                                      compactedAS.ptr(), compactedSize,
+                                      &buffers.blas));
+
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        buffers.outputAS = std::move(compactedAS);
+    }
+}
+
 // ─── Accel::build ─────────────────────────────────────────────────────────────
 
 void Accel::build(OptixDeviceContext ctx, const Scene& scene)
@@ -234,6 +345,21 @@ void Accel::build(OptixDeviceContext ctx, const Scene& scene)
         for (int r : scene.rootNodes()) { scan(r); }
 
         if (hasImplicits) { buildImplicitBlas(ctx); }
+    }
+
+    // ── Splat BLASes (one per dataset with GPU-resident property buffers) ─────
+    // The SBT walk instances a dataset only when splatGpu(i).valid(), so skip
+    // datasets whose upload failed to keep the two walks in agreement.
+    {
+        const auto& splats = scene.splats();
+        m_splatBlas.resize(splats.size());
+        for (size_t i = 0; i < splats.size(); ++i)
+        {
+            if (splats[i].count > 0 && scene.splatGpu(static_cast<int>(i)).valid())
+            {
+                buildSplatBlas(ctx, m_splatBlas[i], splats[i]);
+            }
+        }
     }
 
     buildTlasPhase(ctx, scene);
@@ -303,6 +429,22 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
                 instances.push_back(inst);
             }
         }
+        else if (const SplatNode* sn = dynamic_cast<const SplatNode*>(&node))
+        {
+            const OptixTraversableHandle blas =
+                (sn->splatIndex >= 0) ? splatBlas(static_cast<size_t>(sn->splatIndex)) : 0;
+            if (blas != 0)
+            {
+                OptixInstance inst = {};
+                setTransform(inst, world);
+                inst.instanceId        = static_cast<unsigned int>(instances.size());
+                inst.sbtOffset         = static_cast<unsigned int>(instances.size());
+                inst.visibilityMask    = 0xFF;
+                inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
+                inst.traversableHandle = blas;
+                instances.push_back(inst);
+            }
+        }
 
         for (int childIdx : node.children)
         {
@@ -352,7 +494,16 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
 
 void Accel::rebuildTlas(OptixDeviceContext ctx, const Scene& scene)
 {
-    if (m_meshBuffers.empty() && m_implicitBlas == 0)
+    bool anySplatBlas = false;
+    for (const SplatBlasBuffers& sb : m_splatBlas)
+    {
+        if (sb.blas != 0)
+        {
+            anySplatBlas = true;
+            break;
+        }
+    }
+    if (m_meshBuffers.empty() && m_implicitBlas == 0 && !anySplatBlas)
     {
         return;  // no BLASes built yet — nothing to instance
     }

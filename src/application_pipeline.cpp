@@ -3,6 +3,7 @@
 #include "application.h"
 #include "cuda_optix_check.h"
 #include "implicit_node.h"
+#include "splat_node.h"
 
 #include <filesystem>
 #include <fstream>
@@ -37,17 +38,21 @@ struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupRecord
     union {
         MeshData          mesh;      // used when packed with m_pgHitgroup
         ImplicitShapeData implicit;  // used when packed with m_pgHitgroupImplicit
+        SplatSetData      splat;     // used when packed with m_pgHitgroupSplat
     } data;
 };
 
 // Per-instance info collected during a scene graph DFS.
+enum class InstKind { Mesh, Implicit, Splat };
+
 struct InstanceInfo
 {
     int          nodeIdx;
-    bool         isImplicit;
-    int          meshIdx;      // valid when !isImplicit
-    int          materialIdx;
-    ImplicitType implicitType; // valid when isImplicit
+    InstKind     kind;
+    int          meshIdx;      // valid when kind == Mesh
+    int          materialIdx;  // valid when kind == Mesh or Implicit
+    ImplicitType implicitType; // valid when kind == Implicit
+    int          splatIdx;     // valid when kind == Splat
 };
 
 // Walk the scene graph in the same DFS order as Accel::buildTlasPhase so that
@@ -72,13 +77,24 @@ static void walkSceneInstances(const Scene& scene, std::vector<InstanceInfo>& ou
                     const int matIdx = (j < static_cast<int>(mn->materialIndices.size()))
                         ? mn->materialIndices[j]
                         : meshes[mi].materialIndex;
-                    out.push_back({nodeIdx, false, mi, matIdx, ImplicitType::Sphere});
+                    out.push_back({nodeIdx, InstKind::Mesh, mi, matIdx, ImplicitType::Sphere, -1});
                 }
             }
         }
         else if (const ImplicitNode* in = dynamic_cast<const ImplicitNode*>(&node))
         {
-            out.push_back({nodeIdx, true, 0, in->materialIndex, in->type});
+            out.push_back({nodeIdx, InstKind::Implicit, 0, in->materialIndex, in->type, -1});
+        }
+        else if (const SplatNode* sn = dynamic_cast<const SplatNode*>(&node))
+        {
+            // Instance only GPU-resident datasets — must match the TLAS walk,
+            // which instances a dataset only when its BLAS was built.
+            if (sn->splatIndex >= 0
+                && sn->splatIndex < static_cast<int>(scene.splats().size())
+                && scene.splatGpu(sn->splatIndex).valid())
+            {
+                out.push_back({nodeIdx, InstKind::Splat, 0, -1, ImplicitType::Sphere, sn->splatIndex});
+            }
         }
         for (int childIdx : node.children)
         {
@@ -181,6 +197,16 @@ void Application::buildPipeline(const std::string& ptxDir)
     pgDesc.hitgroup.entryFunctionNameIS = "__intersection__implicit";
     OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgHitgroupImplicit));
 
+    pgDesc                              = {};
+    pgDesc.kind                         = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    pgDesc.hitgroup.moduleCH            = m_module;
+    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__splat";
+    pgDesc.hitgroup.moduleAH            = m_module;
+    pgDesc.hitgroup.entryFunctionNameAH = "__anyhit__splat";
+    pgDesc.hitgroup.moduleIS            = m_module;
+    pgDesc.hitgroup.entryFunctionNameIS = "__intersection__splat";
+    OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgHitgroupSplat));
+
     // ── Pick program groups ───────────────────────────────────────────────────
     pgDesc                              = {};
     pgDesc.kind                         = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
@@ -208,10 +234,20 @@ void Application::buildPipeline(const std::string& ptxDir)
     pgDesc.hitgroup.entryFunctionNameIS = "__intersection__implicit";
     OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgPickHitgroupImplicit));
 
+    pgDesc                              = {};
+    pgDesc.kind                         = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    pgDesc.hitgroup.moduleCH            = m_module;
+    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__pick";
+    pgDesc.hitgroup.moduleIS            = m_module;
+    pgDesc.hitgroup.entryFunctionNameIS = "__intersection__splat";
+    OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgPickHitgroupSplat));
+
     // ── Pipeline ──────────────────────────────────────────────────────────────
     const OptixProgramGroup pgs[] = {
-        m_pgRaygen, m_pgMiss, m_pgMissShadow, m_pgHitgroup, m_pgHitgroupImplicit,
-        m_pgPickRaygen, m_pgPickMiss, m_pgPickHitgroup, m_pgPickHitgroupImplicit
+        m_pgRaygen, m_pgMiss, m_pgMissShadow,
+        m_pgHitgroup, m_pgHitgroupImplicit, m_pgHitgroupSplat,
+        m_pgPickRaygen, m_pgPickMiss,
+        m_pgPickHitgroup, m_pgPickHitgroupImplicit, m_pgPickHitgroupSplat
     };
 
     OptixPipelineLinkOptions linkOpts = {};
@@ -222,7 +258,7 @@ void Application::buildPipeline(const std::string& ptxDir)
     OPTIX_CHECK(optixPipelineCreate(
         m_optixContext,
         &pipelineOpts, &linkOpts,
-        pgs, 9,
+        pgs, 11,
         nullptr, nullptr,
         &m_pipeline));
 
@@ -245,10 +281,12 @@ void Application::reloadPipeline()
     const OptixProgramGroup oldPgMissShadow              = m_pgMissShadow;
     const OptixProgramGroup oldPgHitgroup                = m_pgHitgroup;
     const OptixProgramGroup oldPgHitgroupImplicit        = m_pgHitgroupImplicit;
+    const OptixProgramGroup oldPgHitgroupSplat           = m_pgHitgroupSplat;
     const OptixProgramGroup oldPgPickRaygen              = m_pgPickRaygen;
     const OptixProgramGroup oldPgPickMiss                = m_pgPickMiss;
     const OptixProgramGroup oldPgPickHitgroup            = m_pgPickHitgroup;
     const OptixProgramGroup oldPgPickHitgroupImplicit    = m_pgPickHitgroupImplicit;
+    const OptixProgramGroup oldPgPickHitgroupSplat       = m_pgPickHitgroupSplat;
     const OptixPipeline     oldPipeline                  = m_pipeline;
 
     m_module                    = nullptr;
@@ -257,10 +295,12 @@ void Application::reloadPipeline()
     m_pgMissShadow              = nullptr;
     m_pgHitgroup                = nullptr;
     m_pgHitgroupImplicit        = nullptr;
+    m_pgHitgroupSplat           = nullptr;
     m_pgPickRaygen              = nullptr;
     m_pgPickMiss                = nullptr;
     m_pgPickHitgroup            = nullptr;
     m_pgPickHitgroupImplicit    = nullptr;
+    m_pgPickHitgroupSplat       = nullptr;
     m_pipeline                  = nullptr;
 
     try
@@ -270,10 +310,12 @@ void Application::reloadPipeline()
     catch (...)
     {
         if (m_pipeline)                  { optixPipelineDestroy(m_pipeline);                      m_pipeline                  = nullptr; }
+        if (m_pgPickHitgroupSplat)       { optixProgramGroupDestroy(m_pgPickHitgroupSplat);       m_pgPickHitgroupSplat       = nullptr; }
         if (m_pgPickHitgroupImplicit)    { optixProgramGroupDestroy(m_pgPickHitgroupImplicit);    m_pgPickHitgroupImplicit    = nullptr; }
         if (m_pgPickHitgroup)            { optixProgramGroupDestroy(m_pgPickHitgroup);            m_pgPickHitgroup            = nullptr; }
         if (m_pgPickMiss)                { optixProgramGroupDestroy(m_pgPickMiss);                m_pgPickMiss                = nullptr; }
         if (m_pgPickRaygen)              { optixProgramGroupDestroy(m_pgPickRaygen);              m_pgPickRaygen              = nullptr; }
+        if (m_pgHitgroupSplat)           { optixProgramGroupDestroy(m_pgHitgroupSplat);           m_pgHitgroupSplat           = nullptr; }
         if (m_pgHitgroupImplicit)        { optixProgramGroupDestroy(m_pgHitgroupImplicit);        m_pgHitgroupImplicit        = nullptr; }
         if (m_pgHitgroup)                { optixProgramGroupDestroy(m_pgHitgroup);                m_pgHitgroup                = nullptr; }
         if (m_pgMissShadow)              { optixProgramGroupDestroy(m_pgMissShadow);              m_pgMissShadow              = nullptr; }
@@ -287,10 +329,12 @@ void Application::reloadPipeline()
         m_pgMissShadow              = oldPgMissShadow;
         m_pgHitgroup                = oldPgHitgroup;
         m_pgHitgroupImplicit        = oldPgHitgroupImplicit;
+        m_pgHitgroupSplat           = oldPgHitgroupSplat;
         m_pgPickRaygen              = oldPgPickRaygen;
         m_pgPickMiss                = oldPgPickMiss;
         m_pgPickHitgroup            = oldPgPickHitgroup;
         m_pgPickHitgroupImplicit    = oldPgPickHitgroupImplicit;
+        m_pgPickHitgroupSplat       = oldPgPickHitgroupSplat;
         m_pipeline                  = oldPipeline;
         throw;
     }
@@ -299,10 +343,12 @@ void Application::reloadPipeline()
     m_accumDirty = true;  // new shader = new result; clear accumulation
 
     if (oldPipeline)                  { optixPipelineDestroy(oldPipeline);                    }
+    if (oldPgPickHitgroupSplat)       { optixProgramGroupDestroy(oldPgPickHitgroupSplat);     }
     if (oldPgPickHitgroupImplicit)    { optixProgramGroupDestroy(oldPgPickHitgroupImplicit);  }
     if (oldPgPickHitgroup)            { optixProgramGroupDestroy(oldPgPickHitgroup);          }
     if (oldPgPickMiss)                { optixProgramGroupDestroy(oldPgPickMiss);              }
     if (oldPgPickRaygen)              { optixProgramGroupDestroy(oldPgPickRaygen);            }
+    if (oldPgHitgroupSplat)           { optixProgramGroupDestroy(oldPgHitgroupSplat);         }
     if (oldPgHitgroupImplicit)        { optixProgramGroupDestroy(oldPgHitgroupImplicit);      }
     if (oldPgHitgroup)                { optixProgramGroupDestroy(oldPgHitgroup);              }
     if (oldPgMissShadow)              { optixProgramGroupDestroy(oldPgMissShadow);            }
@@ -367,11 +413,16 @@ void Application::buildSbt()
     for (size_t i = 0; i < instList.size(); ++i)
     {
         const InstanceInfo& info = instList[i];
-        if (info.isImplicit)
+        if (info.kind == InstKind::Implicit)
         {
             OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroupImplicit, &hitRecs[i]));
             hitRecs[i].data.implicit.type          = static_cast<unsigned int>(info.implicitType);
             hitRecs[i].data.implicit.materialIndex = info.materialIdx;
+        }
+        else if (info.kind == InstKind::Splat)
+        {
+            OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroupSplat, &hitRecs[i]));
+            hitRecs[i].data.splat = m_scene->splatGpu(info.splatIdx).view();
         }
         else
         {
@@ -443,10 +494,15 @@ void Application::buildPickSbt()
     {
         const InstanceInfo& info = instList[i];
         hitRecs[i] = {};
-        if (info.isImplicit)
+        if (info.kind == InstKind::Implicit)
         {
             OPTIX_CHECK(optixSbtRecordPackHeader(m_pgPickHitgroupImplicit, &hitRecs[i]));
             hitRecs[i].data.implicit.type = static_cast<unsigned int>(info.implicitType);
+        }
+        else if (info.kind == InstKind::Splat)
+        {
+            OPTIX_CHECK(optixSbtRecordPackHeader(m_pgPickHitgroupSplat, &hitRecs[i]));
+            hitRecs[i].data.splat = m_scene->splatGpu(info.splatIdx).view();
         }
         else
         {

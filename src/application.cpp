@@ -5,6 +5,7 @@
 
 #include "application.h"
 #include "implicit_node.h"
+#include "matrix4x4.h"
 
 #include <optix_function_table_definition.h>
 
@@ -14,6 +15,8 @@
 
 #include <nfd.h>
 #include "scene_loader.h"
+#include "sog_loader.h"
+#include "splat_node.h"
 
 #include <algorithm>
 #include <cmath>
@@ -80,6 +83,7 @@ Application::~Application()
     }
 
     if (m_pipeline)              { optixPipelineDestroy(m_pipeline);                    m_pipeline              = nullptr; }
+    if (m_pgHitgroupSplat)       { optixProgramGroupDestroy(m_pgHitgroupSplat);         m_pgHitgroupSplat       = nullptr; }
     if (m_pgHitgroupImplicit)    { optixProgramGroupDestroy(m_pgHitgroupImplicit);      m_pgHitgroupImplicit    = nullptr; }
     if (m_pgHitgroup)            { optixProgramGroupDestroy(m_pgHitgroup);              m_pgHitgroup            = nullptr; }
     if (m_pgMissShadow)          { optixProgramGroupDestroy(m_pgMissShadow);            m_pgMissShadow          = nullptr; }
@@ -330,6 +334,55 @@ void Application::uploadEmissiveLights()
 }
 
 // ─── Scene loading ────────────────────────────────────────────────────────────
+
+// Import a SOG gaussian splat dataset as a new root SplatNode in the current
+// scene.  Unlike loadScene this is additive — the existing scene is kept.
+void Application::loadSplat(const std::string& path)
+{
+    m_loadError.clear();
+
+    GaussianSplatData data;
+    std::string       error;
+    if (!loadSog(path, data, error))
+    {
+        m_loadError = "SOG load failed: " + error;
+        return;
+    }
+
+    auto node            = std::make_unique<SplatNode>();
+    node->name           = data.name.empty() ? "Splat" : data.name;
+    node->localTransform = mat4Identity();
+    node->splatIndex     = m_scene->addSplat(std::move(data));
+
+    try
+    {
+        m_scene->uploadSplats();
+    }
+    catch (const std::exception& e)
+    {
+        // Host data and node are kept — the dataset just is not GPU-resident.
+        m_loadError = std::string("Splat GPU upload failed: ") + e.what();
+    }
+
+    const int idx = m_scene->addNode(std::move(node));
+    m_scene->addRootNode(idx);
+    m_scene->updateWorldTransforms(idx);
+
+    // The new splat occupies a TLAS slot — full rebuild keeps AS and SBT in sync.
+    try
+    {
+        m_scene->buildAccel(m_optixContext);
+    }
+    catch (const std::exception& e)
+    {
+        m_loadError = std::string("AS build failed: ") + e.what();
+    }
+    buildSbt();
+    uploadEmissiveLights();
+
+    m_selectedNodeIdx = idx;
+    m_accumDirty      = true;
+}
 
 void Application::loadScene(const std::string& path)
 {

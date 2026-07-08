@@ -1,5 +1,6 @@
 #include "application.h"
 #include "implicit_node.h"
+#include "splat_node.h"
 
 #include <algorithm>
 #include <cmath>
@@ -234,6 +235,51 @@ void Application::drawNodePropertiesPanel()
                     ImGui::PopID();
                 }
                 ImGui::EndCombo();
+            }
+        }
+        else if (SplatNode* splatNode = dynamic_cast<SplatNode*>(&node))
+        {
+            ImGui::Separator();
+
+            const auto& splats = m_scene->splats();
+            if (splatNode->splatIndex >= 0
+                && splatNode->splatIndex < static_cast<int>(splats.size()))
+            {
+                const GaussianSplatData& sd = splats[splatNode->splatIndex];
+
+                ImGui::Text("Gaussians: %u", sd.count);
+                ImGui::Text("SH bands: %d%s", sd.shBands,
+                            sd.shBands == 0 ? " (DC color only)" : "");
+                ImGui::Text("Antialias: %s", sd.antialias ? "yes" : "no");
+
+                // Host memory footprint of the decoded arrays
+                const size_t bytes =
+                      sd.positions.size() * sizeof(float3)
+                    + sd.rotations.size() * sizeof(float4)
+                    + sd.scales.size()    * sizeof(float3)
+                    + sd.sh0.size()       * sizeof(float3)
+                    + sd.opacities.size() * sizeof(float)
+                    + sd.shN.size()       * sizeof(float);
+                ImGui::Text("Memory: %.1f MB", static_cast<double>(bytes) / (1024.0 * 1024.0));
+
+                const SplatDeviceBuffers& gpu = m_scene->splatGpu(splatNode->splatIndex);
+                if (gpu.valid())
+                {
+                    const size_t gpuBytes = gpu.meanOpacity.size() + gpu.quat.size()
+                                          + gpu.scale.size() + gpu.sh0.size() + gpu.shN.size();
+                    ImGui::Text("GPU: resident, %.1f MB",
+                                static_cast<double>(gpuBytes) / (1024.0 * 1024.0));
+                }
+                else
+                {
+                    ImGui::Text("GPU: not uploaded");
+                }
+
+                ImGui::TextDisabled("Rendering not implemented yet");
+            }
+            else
+            {
+                ImGui::TextDisabled("Invalid splat data reference");
             }
         }
         else if (dynamic_cast<CameraNode*>(&node))

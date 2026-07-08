@@ -76,6 +76,7 @@ private:
     void checkShaderHotReload();
 
     void loadScene(const std::string& path);
+    void loadSplat(const std::string& path);  // additive: appends a SplatNode
     void loadEnvMap(const std::string& path);
     void loadTexture(const std::string& path);
     void uploadMaterials();
@@ -96,6 +97,7 @@ private:
     OptixProgramGroup m_pgMissShadow      = nullptr;
     OptixProgramGroup m_pgHitgroup        = nullptr;  // triangle meshes
     OptixProgramGroup m_pgHitgroupImplicit = nullptr; // analytic implicit shapes
+    OptixProgramGroup m_pgHitgroupSplat    = nullptr; // gaussian splat particles
     OptixPipeline     m_pipeline          = nullptr;
 
     // Pick program groups (compiled into the same pipeline; use a separate SBT)
@@ -103,6 +105,7 @@ private:
     OptixProgramGroup m_pgPickMiss             = nullptr;
     OptixProgramGroup m_pgPickHitgroup         = nullptr;
     OptixProgramGroup m_pgPickHitgroupImplicit = nullptr;
+    OptixProgramGroup m_pgPickHitgroupSplat    = nullptr;
 
     // Shader binding table
     GPUBuffer               m_sbtRaygenBuffer;

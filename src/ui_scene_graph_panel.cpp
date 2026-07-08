@@ -2,6 +2,7 @@
 #include "icons.h"
 #include "implicit_node.h"
 #include "matrix4x4.h"
+#include "splat_node.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -12,6 +13,7 @@ static const char* nodeIcon(const Node3D& node)
 {
     if (dynamic_cast<const MeshNode*>(&node))   { return ICON_FA_CUBE; }
     if (dynamic_cast<const CameraNode*>(&node)) { return ICON_FA_CAMERA; }
+    if (dynamic_cast<const SplatNode*>(&node))  { return ICON_FA_BRAILLE; }
     if (const auto* in = dynamic_cast<const ImplicitNode*>(&node))
     {
         switch (in->type)
@@ -29,6 +31,7 @@ static ImVec4 nodeIconColor(const Node3D& node)
     if (dynamic_cast<const MeshNode*>(&node))   { return { 0.40f, 0.70f, 1.00f, 1.0f }; }  // blue
     if (dynamic_cast<const CameraNode*>(&node)) { return { 1.00f, 0.85f, 0.30f, 1.0f }; }  // gold
     if (dynamic_cast<const ImplicitNode*>(&node)) { return { 0.50f, 1.00f, 0.60f, 1.0f }; } // green
+    if (dynamic_cast<const SplatNode*>(&node))  { return { 0.85f, 0.55f, 1.00f, 1.0f }; }  // purple
     return { 0.75f, 0.75f, 0.75f, 1.0f };  // gray for groups
 }
 

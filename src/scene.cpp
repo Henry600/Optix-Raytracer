@@ -1,6 +1,7 @@
 #include "scene.h"
 #include "implicit_node.h"
 #include "matrix4x4.h"
+#include "splat_node.h"
 
 #include <algorithm>
 #include <functional>
@@ -40,6 +41,82 @@ int Scene::addMesh(Mesh mesh)
     return static_cast<int>(m_meshes.size()) - 1;
 }
 
+int Scene::addSplat(GaussianSplatData splat)
+{
+    m_splats.push_back(std::move(splat));
+    m_splatGpu.emplace_back();  // buffers stay empty until uploadSplats()
+    return static_cast<int>(m_splats.size()) - 1;
+}
+
+// ─── Splat GPU upload ────────────────────────────────────────────────────────
+
+void SplatDeviceBuffers::upload(const GaussianSplatData& src)
+{
+    count     = src.count;
+    shBands   = src.shBands;
+    antialias = src.antialias;
+
+    // Pack host arrays into coalesced float4 staging buffers.
+    std::vector<float4> staging(src.count);
+
+    for (uint32_t i = 0; i < src.count; ++i)
+    {
+        const float3& p = src.positions[i];
+        staging[i] = make_float4(p.x, p.y, p.z, src.opacities[i]);
+    }
+    meanOpacity.allocAndUpload(staging.data(), staging.size() * sizeof(float4));
+
+    quat.allocAndUpload(src.rotations.data(), src.rotations.size() * sizeof(float4));
+
+    for (uint32_t i = 0; i < src.count; ++i)
+    {
+        const float3& s = src.scales[i];
+        staging[i] = make_float4(s.x, s.y, s.z, 0.0f);
+    }
+    scale.allocAndUpload(staging.data(), staging.size() * sizeof(float4));
+
+    for (uint32_t i = 0; i < src.count; ++i)
+    {
+        const float3& c = src.sh0[i];
+        staging[i] = make_float4(c.x, c.y, c.z, 0.0f);
+    }
+    sh0.allocAndUpload(staging.data(), staging.size() * sizeof(float4));
+
+    if (!src.shN.empty())
+    {
+        shN.allocAndUpload(src.shN.data(), src.shN.size() * sizeof(float));
+    }
+    else
+    {
+        shN.free();
+    }
+}
+
+void Scene::uploadSplats()
+{
+    for (size_t i = 0; i < m_splats.size(); ++i)
+    {
+        if (m_splatGpu[i].valid())
+        {
+            continue;  // already resident
+        }
+        try
+        {
+            m_splatGpu[i].upload(m_splats[i]);
+        }
+        catch (...)
+        {
+            m_splatGpu[i] = SplatDeviceBuffers{};  // free any partial upload
+            throw;
+        }
+    }
+}
+
+const SplatDeviceBuffers& Scene::splatGpu(int idx) const
+{
+    return m_splatGpu[idx];
+}
+
 int Scene::addMaterial(MaterialData material, std::string name)
 {
     m_materials.push_back(material);
@@ -56,6 +133,11 @@ int Scene::addTexture(Texture texture)
 const std::vector<Mesh>& Scene::meshes() const
 {
     return m_meshes;
+}
+
+const std::vector<GaussianSplatData>& Scene::splats() const
+{
+    return m_splats;
 }
 
 const std::vector<MaterialData>& Scene::materials() const
@@ -149,6 +231,12 @@ static int duplicateSubtreeImpl(Scene& scene, int srcIdx, int newParentIdx)
         auto m              = std::make_unique<ImplicitNode>();
         m->type             = in->type;
         m->materialIndex    = in->materialIndex;
+        copy                = std::move(m);
+    }
+    else if (const auto* sn = dynamic_cast<const SplatNode*>(&src))
+    {
+        auto m              = std::make_unique<SplatNode>();
+        m->splatIndex       = sn->splatIndex;  // share the dataset, like meshes
         copy                = std::move(m);
     }
     else if (dynamic_cast<const CameraNode*>(&src))
@@ -323,6 +411,17 @@ void Scene::uploadEmissiveLights()
                 ++instanceCounter;
             }
         }
+        else if (const SplatNode* sn = dynamic_cast<const SplatNode*>(&node))
+        {
+            // Splats occupy a TLAS slot (when GPU-resident) but are never
+            // emissive lights — count the instance to keep IDs aligned.
+            if (sn->splatIndex >= 0
+                && sn->splatIndex < static_cast<int>(m_splatGpu.size())
+                && m_splatGpu[sn->splatIndex].valid())
+            {
+                ++instanceCounter;
+            }
+        }
         else if (const ImplicitNode* imp = dynamic_cast<const ImplicitNode*>(&node))
         {
             const unsigned int thisId = instanceCounter++;
@@ -436,6 +535,8 @@ void Scene::clear()
     m_emissiveLightCount = 0;
     m_accel.reset();  // free GPU AS memory before geometry is cleared
     m_meshes.clear();
+    m_splats.clear();
+    m_splatGpu.clear();  // GPUBuffer destructors free the device memory
     m_materials.clear();
     m_materialNames.clear();
     m_textures.clear();

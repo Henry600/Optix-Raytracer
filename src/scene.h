@@ -3,6 +3,7 @@
 
 #include "accel.h"
 #include "camera.h"
+#include "gaussian_splat.h"
 #include "gpu_buffer.h"
 #include "mesh.h"
 #include "node_3d.h"
@@ -28,8 +29,17 @@ public:
     int addMesh(Mesh mesh);
     int addMaterial(MaterialData material, std::string name = {});
     int addTexture(Texture texture);
+    int addSplat(GaussianSplatData splat);
 
-    const std::vector<Mesh>&         meshes()                   const;
+    const std::vector<Mesh>&               meshes()             const;
+    const std::vector<GaussianSplatData>&  splats()             const;
+
+    // Upload any splat datasets that do not have device buffers yet.
+    // Throws std::runtime_error on CUDA failure (partial upload is freed).
+    void uploadSplats();
+
+    // Device buffers for dataset idx; .valid() is false before uploadSplats().
+    const SplatDeviceBuffers& splatGpu(int idx) const;
     const std::vector<MaterialData>& materials()                const;
     std::vector<MaterialData>&       materials();               // mutable for in-place editing
     const std::vector<Texture>&      textures()                 const;
@@ -138,7 +148,9 @@ private:
     // Called from the constructor and clear().
     void addDefaultCameraNode();
 
-    std::vector<Mesh>         m_meshes;
+    std::vector<Mesh>               m_meshes;
+    std::vector<GaussianSplatData>  m_splats;
+    std::vector<SplatDeviceBuffers> m_splatGpu;  // parallel to m_splats
     std::vector<MaterialData> m_materials;
     std::vector<std::string>  m_materialNames;  // parallel to m_materials
     std::vector<Texture>      m_textures;

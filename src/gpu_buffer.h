@@ -1,6 +1,7 @@
 #ifndef OPTIX_RAYTRACER_GPU_BUFFER_H
 #define OPTIX_RAYTRACER_GPU_BUFFER_H
 
+#include <cuda.h>          // CUdeviceptr (driver API type)
 #include <cuda_runtime.h>
 #include <stdexcept>
 #include <string>

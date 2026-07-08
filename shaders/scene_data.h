@@ -62,6 +62,21 @@ struct ImplicitShapeData
     int          materialIndex; // into the per-launch MaterialData array
 };
 
+// GPU view of one gaussian splat dataset — all pointers are device pointers
+// into buffers owned by the host-side SplatDeviceBuffers.  Arrays are indexed
+// by gaussian; float4 packing keeps loads coalesced.
+struct SplatSetData
+{
+    const float4* meanOpacity;  // xyz = mean (splat-local space), w = opacity [0,1]
+    const float4* quat;         // unit quaternion (x, y, z, w)
+    const float4* scale;        // xyz = linear per-axis scale, w unused
+    const float4* sh0;          // xyz = DC SH coefficients (f_dc), w unused
+    const float*  shN;          // higher-order SH (see gaussian_splat.h layout); null when absent
+    unsigned int  count;
+    int           shBands;      // 0 = DC only
+    int           antialias;    // 1 = dataset was trained with mip-splatting antialias
+};
+
 // One emissive implicit light — uploaded per-frame for direct light sampling (NEE).
 // Stores the local-to-world transform and its inverse so the device can sample a
 // point on the canonical unit shape and compute a correct solid-angle PDF via the
