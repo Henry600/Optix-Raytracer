@@ -627,13 +627,18 @@ void writeDisplay(unsigned int fbIdx, float3 linear)
 
 #define SPLAT_KBUF 16
 
+// Minimum contributing alpha — gaussians below this are culled from the BLAS
+// (see Accel::buildSplatBlas adaptive bounds) and skipped by the IS.
+#define SPLAT_MIN_ALPHA 0.01f
+
 struct SplatGather
 {
-    int    count;              // valid entries in the arrays below
-    int    dropped;            // 1 = at least one hit beyond t[count-1] was discarded
-    float  t[SPLAT_KBUF];      // max-response depth, ascending
-    float  a[SPLAT_KBUF];      // gaussian alpha at max response
-    float3 c[SPLAT_KBUF];      // emitted colour (linear)
+    int      count;               // valid entries in the arrays below
+    int      dropped;             // 1 = at least one hit beyond t[count-1] was discarded
+    float    t[SPLAT_KBUF];       // max-response depth, ascending
+    float    a[SPLAT_KBUF];       // gaussian alpha at max response
+    unsigned int inst[SPLAT_KBUF]; // TLAS instance index → optixLaunchParams.splatInstances
+    unsigned int prim[SPLAT_KBUF]; // gaussian index within the dataset
 };
 
 // Evaluate the view-dependent splat colour: DC term plus optional SH bands
@@ -725,8 +730,17 @@ void traceSplatSegment(float3 rayOrig, float3 rayDir, float tMin, float tMax,
 
         for (int i = 0; i < g.count; ++i)
         {
+            // Colour is evaluated here — per composited entry — rather than in
+            // the intersection shader, where it would run for every BVH
+            // candidate including ones that never make it into the k-buffer.
+            const SplatInstanceData& sid = optixLaunchParams.splatInstances[g.inst[i]];
+            const float3 dObj = devNormalize(make_float3(
+                sid.w2o[0] * rayDir.x + sid.w2o[1] * rayDir.y + sid.w2o[2] * rayDir.z,
+                sid.w2o[3] * rayDir.x + sid.w2o[4] * rayDir.y + sid.w2o[5] * rayDir.z,
+                sid.w2o[6] * rayDir.x + sid.w2o[7] * rayDir.y + sid.w2o[8] * rayDir.z));
+
             const float a = fminf(g.a[i], 0.99f);
-            C += (g.c[i] * (T * a));
+            C += (evalSplatColor(sid.set, g.prim[i], dObj) * (T * a));
             T *= 1.0f - a;
             if (T < 0.003f)
             {
@@ -734,12 +748,14 @@ void traceSplatSegment(float3 rayOrig, float3 rayDir, float tMin, float tMax,
             }
         }
 
-        if (!g.dropped || g.count == 0 || T < 0.003f)
+        // Continue batching while the buffer filled up (a full buffer reports
+        // a hit that shrinks tmax, so farther candidates never reach the IS
+        // and `dropped` alone can't detect them) or an overflow was recorded.
+        const bool truncated = (g.count == SPLAT_KBUF) || g.dropped;
+        if (!truncated || g.count == 0 || T < 0.003f)
         {
             break;  // segment fully gathered or effectively opaque
         }
-        // Buffer overflowed — everything dropped lies beyond the last kept
-        // depth; continue gathering from there.
         tStart = g.t[g.count - 1] * (1.0f + 1e-4f) + 1e-6f;
     }
 
@@ -1902,9 +1918,9 @@ extern "C" __global__ void __intersection__splat()
     const unsigned int prim = optixGetPrimitiveIndex();
     const float4 mo = sd.meanOpacity[prim];
 
-    if (mo.w < 0.004f)
+    if (mo.w < SPLAT_MIN_ALPHA)
     {
-        return;  // cull near-invisible gaussians (< 1/255)
+        return;  // cannot contribute above the compositing threshold
     }
 
     const float4 q = sd.quat[prim];   // (x, y, z, w)
@@ -1962,7 +1978,7 @@ extern "C" __global__ void __intersection__splat()
     }
 
     const float alpha = mo.w * expf(-0.5f * r2m);
-    if (alpha < 0.004f)
+    if (alpha < SPLAT_MIN_ALPHA)
     {
         return;
     }
@@ -1992,14 +2008,24 @@ extern "C" __global__ void __intersection__splat()
     }
     while (i > 0 && g->t[i - 1] > tPeak)
     {
-        g->t[i] = g->t[i - 1];
-        g->a[i] = g->a[i - 1];
-        g->c[i] = g->c[i - 1];
+        g->t[i]    = g->t[i - 1];
+        g->a[i]    = g->a[i - 1];
+        g->inst[i] = g->inst[i - 1];
+        g->prim[i] = g->prim[i - 1];
         --i;
     }
-    g->t[i] = tPeak;
-    g->a[i] = alpha;
-    g->c[i] = evalSplatColor(sd, prim, devNormalize(rd));
+    g->t[i]    = tPeak;
+    g->a[i]    = alpha;
+    g->inst[i] = optixGetInstanceIndex();
+    g->prim[i] = prim;
+
+    // Once the buffer is full, report a hit at the farthest kept depth: OptiX
+    // shrinks tmax, so traversal culls BVH nodes beyond it — dropped hits out
+    // there are re-gathered by the next batch anyway.
+    if (g->count == SPLAT_KBUF)
+    {
+        optixReportIntersection(g->t[SPLAT_KBUF - 1], 0);
+    }
 }
 
 extern "C" __global__ void __intersection__splat_solid()

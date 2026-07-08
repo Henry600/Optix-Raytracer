@@ -84,6 +84,18 @@ struct SplatSetData
     int           antialias;    // 1 = dataset was trained with mip-splatting antialias
 };
 
+// Per-TLAS-instance splat data, indexed by optixGetInstanceIndex().  Lets the
+// raygen composite loop evaluate splat colours outside the SBT: the k-buffer
+// stores only (t, α, instance, prim) and the (expensive) SH evaluation runs
+// per composited entry instead of per BVH candidate.  Entries for non-splat
+// instances are zeroed and never read.
+struct SplatInstanceData
+{
+    SplatSetData set;     // dataset view for this instance
+    float        w2o[9];  // world-to-object 3×3, row-major — transforms the ray
+                          // direction into splat-local space for SH evaluation
+};
+
 // One emissive implicit light — uploaded per-frame for direct light sampling (NEE).
 // Stores the local-to-world transform and its inverse so the device can sample a
 // point on the canonical unit shape and compute a correct solid-angle PDF via the

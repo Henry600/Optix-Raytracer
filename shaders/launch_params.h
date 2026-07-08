@@ -76,6 +76,10 @@ struct LaunchParams
     // splat volume gather trace in the raygen path loop.
     int hasSplats;
 
+    // Per-TLAS-instance splat data, indexed by instance index (length = total
+    // instance count; zeroed for non-splat instances).  Null when hasSplats == 0.
+    const SplatInstanceData* splatInstances;
+
     // Picking — only valid during a 1×1 pick launch; ignored by the normal raygen.
     float     pickU;      // normalised mouse X [0, 1]
     float     pickV;      // normalised mouse Y [0, 1]

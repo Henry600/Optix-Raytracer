@@ -196,15 +196,33 @@ void Accel::buildSplatBlas(
     const GaussianSplatData& splat)
 {
     // ── Per-gaussian AABBs in splat-local space ───────────────────────────────
-    // The gaussian's 3σ ellipsoid is x = μ + R · diag(s) · u with |u| = 3.
-    // Its AABB half-extent along axis j is 3·‖row_j(R · diag(s))‖.
+    // Adaptive bounds (3DGRT): the gaussian's response falls below the
+    // compositing threshold α_min at Mahalanobis radius
+    //   r = sqrt(2·ln(opacity / α_min)),  capped at 3σ.
+    // Faint gaussians get proportionally smaller AABBs — dramatically less BVH
+    // overlap — and gaussians below α_min collapse to a point (never hit; the
+    // primitive index must stay aligned with the property arrays, so they
+    // cannot simply be removed).
+    // AABB half-extent along axis j is r·‖row_j(R · diag(s))‖.
+    constexpr float kMinAlpha = 0.01f;  // keep in sync with SPLAT_MIN_ALPHA (device)
+
     std::vector<OptixAabb> aabbs(splat.count);
 
     for (uint32_t i = 0; i < splat.count; ++i)
     {
-        const float3& p = splat.positions[i];
+        const float3& p       = splat.positions[i];
+        const float   opacity = splat.opacities[i];
+
+        if (opacity <= kMinAlpha)
+        {
+            aabbs[i] = { p.x, p.y, p.z, p.x, p.y, p.z };  // degenerate — culled
+            continue;
+        }
+
         const float4& q = splat.rotations[i];  // (x, y, z, w)
         const float3& s = splat.scales[i];
+
+        const float radius = std::min(3.0f, std::sqrt(2.0f * std::log(opacity / kMinAlpha)));
 
         // Rotation matrix rows from the unit quaternion
         const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
@@ -223,7 +241,7 @@ void Accel::buildSplatBlas(
             const float mx = r[j][0] * s.x;
             const float my = r[j][1] * s.y;
             const float mz = r[j][2] * s.z;
-            half[j] = 3.0f * std::sqrt(mx * mx + my * my + mz * mz);
+            half[j] = radius * std::sqrt(mx * mx + my * my + mz * mz);
         }
 
         aabbs[i] = { p.x - half[0], p.y - half[1], p.z - half[2],

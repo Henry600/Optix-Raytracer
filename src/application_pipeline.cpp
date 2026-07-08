@@ -3,8 +3,10 @@
 #include "application.h"
 #include "cuda_optix_check.h"
 #include "implicit_node.h"
+#include "matrix4x4.h"
 #include "splat_node.h"
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -462,6 +464,51 @@ void Application::buildSbt()
     }
 
     buildPickSbt();
+}
+
+// ─── Splat instance data ─────────────────────────────────────────────────────
+// Uploads one SplatInstanceData per TLAS instance (zeroed for non-splat
+// instances): the dataset view plus the world-to-object rotation used for SH
+// direction evaluation at composite time.  Called every frame while splats
+// exist — cheap (tiny array), and it keeps rotations correct through live
+// gizmo edits, which rebuild the TLAS without touching the SBT.
+
+void Application::updateSplatInstances()
+{
+    std::vector<InstanceInfo> instList;
+    walkSceneInstances(*m_scene, instList);
+
+    std::vector<SplatInstanceData> data(instList.size());
+    std::memset(data.data(), 0, data.size() * sizeof(SplatInstanceData));
+
+    for (size_t i = 0; i < instList.size(); ++i)
+    {
+        if (instList[i].kind != InstKind::Splat)
+        {
+            continue;
+        }
+        SplatInstanceData& d = data[i];
+        d.set = m_scene->splatGpu(instList[i].splatIdx).view();
+
+        const Matrix4x4 inv =
+            mat4Inverse(m_scene->nodes()[instList[i].nodeIdx]->worldTransform);
+        d.w2o[0] = inv.m[0][0];  d.w2o[1] = inv.m[0][1];  d.w2o[2] = inv.m[0][2];
+        d.w2o[3] = inv.m[1][0];  d.w2o[4] = inv.m[1][1];  d.w2o[5] = inv.m[1][2];
+        d.w2o[6] = inv.m[2][0];  d.w2o[7] = inv.m[2][1];  d.w2o[8] = inv.m[2][2];
+    }
+
+    if (data.empty())
+    {
+        m_splatInstancesBuffer.free();
+        return;
+    }
+
+    const size_t bytes = data.size() * sizeof(SplatInstanceData);
+    if (m_splatInstancesBuffer.size() != bytes)
+    {
+        m_splatInstancesBuffer.alloc(bytes);
+    }
+    m_splatInstancesBuffer.upload(data.data(), bytes);
 }
 
 // ─── Pick SBT ────────────────────────────────────────────────────────────────

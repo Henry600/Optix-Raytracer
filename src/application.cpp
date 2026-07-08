@@ -610,6 +610,13 @@ bool Application::tick()
         m_launchParams.sampleIndex       = m_sampleCount;
         m_launchParams.materials         = m_materialsBuffer.typedPtr<const MaterialData>();
         m_launchParams.hasSplats         = (m_splatInstanceCount > 0) ? 1 : 0;
+        if (m_splatInstanceCount > 0)
+        {
+            updateSplatInstances();  // follow live node transform edits
+        }
+        m_launchParams.splatInstances    = (m_splatInstanceCount > 0)
+            ? m_splatInstancesBuffer.typedPtr<const SplatInstanceData>()
+            : nullptr;
         m_launchParams.sceneTextures     = m_scene->textureObjects();
         m_launchParams.normalBuffer      = m_normalBuffer.typedPtr<float4>();
         m_launchParams.albedoBuffer      = m_albedoBuffer.typedPtr<float4>();

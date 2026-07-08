@@ -111,6 +111,12 @@ private:
     // hasSplats launch param so splat-free scenes skip the volume gather trace.
     int m_splatInstanceCount = 0;
 
+    // Per-TLAS-instance SplatInstanceData array (device).  Refreshed every
+    // frame while splats exist — node transforms can change without an SBT
+    // rebuild and the world-to-object rotations must follow.
+    GPUBuffer m_splatInstancesBuffer;
+    void updateSplatInstances();  // defined in application_pipeline.cpp
+
     // Shader binding table
     GPUBuffer               m_sbtRaygenBuffer;
     GPUBuffer               m_sbtMissBuffer;
