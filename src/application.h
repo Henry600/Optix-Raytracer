@@ -107,6 +107,10 @@ private:
     OptixProgramGroup m_pgPickHitgroupImplicit = nullptr;
     OptixProgramGroup m_pgPickHitgroupSplat    = nullptr;
 
+    // Number of gaussian splat instances in the current SBT/TLAS — drives the
+    // hasSplats launch param so splat-free scenes skip the volume gather trace.
+    int m_splatInstanceCount = 0;
+
     // Shader binding table
     GPUBuffer               m_sbtRaygenBuffer;
     GPUBuffer               m_sbtMissBuffer;

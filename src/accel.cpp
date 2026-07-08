@@ -409,7 +409,7 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
                 setTransform(inst, world);
                 inst.instanceId        = static_cast<unsigned int>(instances.size());
                 inst.sbtOffset         = static_cast<unsigned int>(instances.size());
-                inst.visibilityMask    = 0xFF;
+                inst.visibilityMask    = VIS_MASK_GEOMETRY;
                 inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
                 inst.traversableHandle = m_meshBuffers[mi].blas;
                 instances.push_back(inst);
@@ -423,7 +423,7 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
                 setTransform(inst, world);
                 inst.instanceId        = static_cast<unsigned int>(instances.size());
                 inst.sbtOffset         = static_cast<unsigned int>(instances.size());
-                inst.visibilityMask    = 0xFF;
+                inst.visibilityMask    = VIS_MASK_GEOMETRY;
                 inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
                 inst.traversableHandle = m_implicitBlas;
                 instances.push_back(inst);
@@ -439,7 +439,7 @@ void Accel::buildTlasPhase(OptixDeviceContext ctx, const Scene& scene)
                 setTransform(inst, world);
                 inst.instanceId        = static_cast<unsigned int>(instances.size());
                 inst.sbtOffset         = static_cast<unsigned int>(instances.size());
-                inst.visibilityMask    = 0xFF;
+                inst.visibilityMask    = VIS_MASK_SPLAT;
                 inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
                 inst.traversableHandle = blas;
                 instances.push_back(inst);

@@ -616,6 +616,137 @@ void writeDisplay(unsigned int fbIdx, float3 linear)
     optixLaunchParams.colorBuffer[fbIdx] = make_float4(c.x, c.y, c.z, 1.0f);
 }
 
+// ─── Gaussian splat volume gather ────────────────────────────────────────────
+// 3DGRT-style compositing: a dedicated trace against splat instances only
+// (VIS_MASK_SPLAT) gathers per-gaussian responses along a ray segment into a
+// k-buffer held in the payload.  __intersection__splat evaluates each
+// candidate's maximum response along the ray and inserts (t, α, colour) sorted
+// by depth — it never reports an intersection, so traversal always covers the
+// full segment.  The raygen then composites front-to-back and, if the buffer
+// overflowed, re-traces from the last kept depth until transmittance is spent.
+
+#define SPLAT_KBUF 16
+
+struct SplatGather
+{
+    int    count;              // valid entries in the arrays below
+    int    dropped;            // 1 = at least one hit beyond t[count-1] was discarded
+    float  t[SPLAT_KBUF];      // max-response depth, ascending
+    float  a[SPLAT_KBUF];      // gaussian alpha at max response
+    float3 c[SPLAT_KBUF];      // emitted colour (linear)
+};
+
+// Evaluate the view-dependent splat colour: DC term plus optional SH bands
+// 1..3, using the 3DGS basis convention.  `d` is the unit view direction in
+// splat-local space (object space), pointing from the camera toward the point.
+static __forceinline__ __device__
+float3 evalSplatColor(const SplatSetData& sd, unsigned int prim, float3 d)
+{
+    const float4 fdc = sd.sh0[prim];
+    const float  C0  = 0.28209479177387814f;
+    float3 col = make_float3(0.5f + C0 * fdc.x,
+                             0.5f + C0 * fdc.y,
+                             0.5f + C0 * fdc.z);
+
+    if (sd.shBands > 0 && sd.shN)
+    {
+        const int coeffs = (sd.shBands + 1) * (sd.shBands + 1) - 1;  // 3 / 8 / 15
+        const float* sh  = sd.shN + static_cast<size_t>(prim) * coeffs * 3;
+
+        const float x = d.x, y = d.y, z = d.z;
+
+        // Band 1
+        const float C1 = 0.4886025119029199f;
+        col += make_float3(sh[0], sh[1], sh[2]) * (-C1 * y);
+        col += make_float3(sh[3], sh[4], sh[5]) * ( C1 * z);
+        col += make_float3(sh[6], sh[7], sh[8]) * (-C1 * x);
+
+        if (sd.shBands > 1)
+        {
+            const float xx = x * x, yy = y * y, zz = z * z;
+            const float xy = x * y, yz = y * z, xz = x * z;
+
+            // Band 2
+            col += make_float3(sh[ 9], sh[10], sh[11]) * (1.0925484305920792f  * xy);
+            col += make_float3(sh[12], sh[13], sh[14]) * (-1.0925484305920792f * yz);
+            col += make_float3(sh[15], sh[16], sh[17]) * (0.31539156525252005f * (2.0f * zz - xx - yy));
+            col += make_float3(sh[18], sh[19], sh[20]) * (-1.0925484305920792f * xz);
+            col += make_float3(sh[21], sh[22], sh[23]) * (0.5462742152960396f  * (xx - yy));
+
+            if (sd.shBands > 2)
+            {
+                // Band 3
+                col += make_float3(sh[24], sh[25], sh[26]) * (-0.5900435899266435f * y * (3.0f * xx - yy));
+                col += make_float3(sh[27], sh[28], sh[29]) * ( 2.890611442640554f  * xy * z);
+                col += make_float3(sh[30], sh[31], sh[32]) * (-0.4570457994644658f * y * (4.0f * zz - xx - yy));
+                col += make_float3(sh[33], sh[34], sh[35]) * ( 0.3731763325901154f * z * (2.0f * zz - 3.0f * xx - 3.0f * yy));
+                col += make_float3(sh[36], sh[37], sh[38]) * (-0.4570457994644658f * x * (4.0f * zz - xx - yy));
+                col += make_float3(sh[39], sh[40], sh[41]) * ( 1.445305721320277f  * z * (xx - yy));
+                col += make_float3(sh[42], sh[43], sh[44]) * (-0.5900435899266435f * x * (xx - 3.0f * yy));
+            }
+        }
+    }
+
+    col.x = fmaxf(col.x, 0.0f);
+    col.y = fmaxf(col.y, 0.0f);
+    col.z = fmaxf(col.z, 0.0f);
+
+    // 3DGS colours are display-referred; linearize into the working space.
+    return srgbToLinear3(col);
+}
+
+// Composite all gaussians along [tMin, tMax] front-to-back.  Returns the
+// in-scattered radiance and the remaining transmittance for the segment.
+static __forceinline__ __device__
+void traceSplatSegment(float3 rayOrig, float3 rayDir, float tMin, float tMax,
+                       float3& outRadiance, float& outTransmittance)
+{
+    float3 C = make_float3(0.0f, 0.0f, 0.0f);
+    float  T = 1.0f;
+
+    float tStart = tMin;
+    for (int batch = 0; batch < 32; ++batch)
+    {
+        SplatGather g;
+        g.count   = 0;
+        g.dropped = 0;
+
+        uint32_t p0, p1;
+        packPointer(&g, p0, p1);
+
+        optixTrace(
+            optixLaunchParams.traversable,
+            rayOrig, rayDir,
+            tStart, tMax, 0.0f,
+            OptixVisibilityMask(VIS_MASK_SPLAT),
+            OPTIX_RAY_FLAG_DISABLE_ANYHIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
+            0, 1, 0,   // miss 0 = __miss__radiance (empty — payload untouched)
+            p0, p1);
+
+        for (int i = 0; i < g.count; ++i)
+        {
+            const float a = fminf(g.a[i], 0.99f);
+            C += (g.c[i] * (T * a));
+            T *= 1.0f - a;
+            if (T < 0.003f)
+            {
+                break;
+            }
+        }
+
+        if (!g.dropped || g.count == 0 || T < 0.003f)
+        {
+            break;  // segment fully gathered or effectively opaque
+        }
+        // Buffer overflowed — everything dropped lies beyond the last kept
+        // depth; continue gathering from there.
+        tStart = g.t[g.count - 1] * (1.0f + 1e-4f) + 1e-6f;
+    }
+
+    outRadiance      = C;
+    outTransmittance = fmaxf(T, 0.0f);
+}
+
 // ─── Raygen — iterative path loop ────────────────────────────────────────────
 
 extern "C" __global__ void __raygen__renderFrame()
@@ -728,10 +859,29 @@ extern "C" __global__ void __raygen__renderFrame()
             optixLaunchParams.traversable,
             rayOrig, rayDir,
             1e-3f, 1e30f, 0.0f,
-            OptixVisibilityMask(0xFF),
+            OptixVisibilityMask(VIS_MASK_GEOMETRY),  // splats composite in a separate gather
             OPTIX_RAY_FLAG_DISABLE_ANYHIT,  // anyhit only needed for shadow rays
             0, 1, 0,
             p0, p1);
+
+        // ── Gaussian splat volume segment ────────────────────────────────────
+        // Composite splats between the ray origin and the surface hit (or to
+        // infinity on miss).  Splats add in-scattered radiance and attenuate
+        // everything behind them — including the env map on miss below.
+        if (optixLaunchParams.hasSplats)
+        {
+            float3 splatC;
+            float  splatT;
+            traceSplatSegment(rayOrig, rayDir, 1e-3f,
+                              vtx.hit ? vtx.t : 1e30f,
+                              splatC, splatT);
+            radiance   += throughput * splatC;
+            throughput  = throughput * splatT;
+            if (fmaxf(throughput.x, fmaxf(throughput.y, throughput.z)) < 1e-4f)
+            {
+                break;
+            }
+        }
 
         // ── Denoiser guide layers: write on first bounce only ────────────────
         if (bounce == 0)
@@ -918,7 +1068,7 @@ extern "C" __global__ void __raygen__renderFrame()
                                 optixLaunchParams.traversable,
                                 vtx.pos + Nf * 1e-3f, neeDir,
                                 1e-3f, 1e30f, 0.0f,
-                                OptixVisibilityMask(0xFF),
+                                OptixVisibilityMask(VIS_MASK_GEOMETRY),
                                 OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
                                 0, 1, 1,
                                 shadowVis, shadowFR, shadowFG, shadowFB);
@@ -980,7 +1130,7 @@ extern "C" __global__ void __raygen__renderFrame()
                                     optixLaunchParams.traversable,
                                     vtx.pos + Nf * 1e-3f, neeDir,
                                     1e-3f, dist - 2e-3f, 0.0f,
-                                    OptixVisibilityMask(0xFF),
+                                    OptixVisibilityMask(VIS_MASK_GEOMETRY),
                                     OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
                                     0, 1, 1,
                                     shadowVis, shadowFR, shadowFG, shadowFB);
@@ -1057,7 +1207,7 @@ extern "C" __global__ void __raygen__renderFrame()
                                 optixLaunchParams.traversable,
                                 vtx.pos + Nf * 1e-3f, neeDir,
                                 1e-3f, 1e30f, 0.0f,
-                                OptixVisibilityMask(0xFF),
+                                OptixVisibilityMask(VIS_MASK_GEOMETRY),
                                 OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
                                 0, 1, 1,   // offset=0, stride=1, missIndex=1
                                 shadowVis, shadowFR, shadowFG, shadowFB);
@@ -1107,7 +1257,7 @@ extern "C" __global__ void __raygen__renderFrame()
                                     optixLaunchParams.traversable,
                                     vtx.pos + Nf * 1e-3f, neeDir,
                                     1e-3f, dist - 2e-3f, 0.0f,
-                                    OptixVisibilityMask(0xFF),
+                                    OptixVisibilityMask(VIS_MASK_GEOMETRY),
                                     OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
                                     0, 1, 1,
                                     shadowVis, shadowFR, shadowFG, shadowFB);
@@ -1735,11 +1885,14 @@ extern "C" __global__ void __closesthit__implicit()
     vtx->instanceId = optixGetInstanceId();  // used by emissive NEE MIS
 }
 
-// ─── Gaussian splats: debug ellipsoid visualization ──────────────────────────
-// Each gaussian is intersected as its 3σ ellipsoid and shaded as a flat
-// emissive surface with its DC (SH band 0) color.  This verifies the BLAS,
-// TLAS instancing, and SBT wiring end-to-end; proper 3DGRT-style volumetric
-// alpha compositing replaces this in a follow-up step.
+// ─── Gaussian splats ─────────────────────────────────────────────────────────
+// Two intersection programs share the ellipsoid math:
+//   __intersection__splat       — volume gather for the radiance path: inserts
+//                                 (t, α, colour) at the gaussian's maximum
+//                                 response into the SplatGather payload and
+//                                 never reports, so traversal spans the segment.
+//   __intersection__splat_solid — reporting 3σ ellipsoid hit, used by the pick
+//                                 SBT so splats remain clickable in the viewport.
 
 extern "C" __global__ void __intersection__splat()
 {
@@ -1749,9 +1902,9 @@ extern "C" __global__ void __intersection__splat()
     const unsigned int prim = optixGetPrimitiveIndex();
     const float4 mo = sd.meanOpacity[prim];
 
-    if (mo.w < 0.01f)
+    if (mo.w < 0.004f)
     {
-        return;  // cull near-invisible gaussians
+        return;  // cull near-invisible gaussians (< 1/255)
     }
 
     const float4 q = sd.quat[prim];   // (x, y, z, w)
@@ -1774,8 +1927,114 @@ extern "C" __global__ void __intersection__splat()
     const float3 rd = optixGetObjectRayDirection();
     const float3 oc = make_float3(ro.x - mo.x, ro.y - mo.y, ro.z - mo.z);
 
-    // Into the gaussian's unit frame: u = diag(1/s) · Rᵀ · v.
-    // Rᵀ rows are R columns: (Rᵀ v)_k = dot(col_k, v).
+    // Into the gaussian's σ-normalized frame: u = diag(1/s) · Rᵀ · v,
+    // so |u|² is the squared Mahalanobis distance.
+    const float3 ou = make_float3(
+        (r0.x * oc.x + r1.x * oc.y + r2.x * oc.z) * invS.x,
+        (r0.y * oc.x + r1.y * oc.y + r2.y * oc.z) * invS.y,
+        (r0.z * oc.x + r1.z * oc.y + r2.z * oc.z) * invS.z);
+    const float3 du = make_float3(
+        (r0.x * rd.x + r1.x * rd.y + r2.x * rd.z) * invS.x,
+        (r0.y * rd.x + r1.y * rd.y + r2.y * rd.z) * invS.y,
+        (r0.z * rd.x + r1.z * rd.y + r2.z * rd.z) * invS.z);
+
+    const float a2 = devDot(du, du);
+    if (a2 < 1e-12f)
+    {
+        return;
+    }
+
+    // Depth of maximum gaussian response along the ray
+    const float tPeak = -devDot(ou, du) / a2;
+    if (tPeak < optixGetRayTmin() || tPeak > optixGetRayTmax())
+    {
+        return;  // peak outside this segment/batch — contributes elsewhere
+    }
+
+    // Squared Mahalanobis distance at the peak → gaussian falloff
+    const float3 up = make_float3(ou.x + tPeak * du.x,
+                                  ou.y + tPeak * du.y,
+                                  ou.z + tPeak * du.z);
+    const float r2m = devDot(up, up);
+    if (r2m > 9.0f)
+    {
+        return;  // beyond 3σ
+    }
+
+    const float alpha = mo.w * expf(-0.5f * r2m);
+    if (alpha < 0.004f)
+    {
+        return;
+    }
+
+    SplatGather* g = reinterpret_cast<SplatGather*>(
+        (static_cast<uint64_t>(optixGetPayload_0()) << 32)
+        | static_cast<uint64_t>(optixGetPayload_1()));
+
+    // Sorted insert (ascending t); when full, the farthest entry is dropped
+    // and `dropped` triggers a re-trace batch from the last kept depth.
+    if (g->count == SPLAT_KBUF && tPeak >= g->t[SPLAT_KBUF - 1])
+    {
+        g->dropped = 1;
+        return;
+    }
+
+    int i;
+    if (g->count == SPLAT_KBUF)
+    {
+        g->dropped = 1;          // overwriting the farthest kept entry
+        i = SPLAT_KBUF - 1;
+    }
+    else
+    {
+        i = g->count;
+        ++g->count;
+    }
+    while (i > 0 && g->t[i - 1] > tPeak)
+    {
+        g->t[i] = g->t[i - 1];
+        g->a[i] = g->a[i - 1];
+        g->c[i] = g->c[i - 1];
+        --i;
+    }
+    g->t[i] = tPeak;
+    g->a[i] = alpha;
+    g->c[i] = evalSplatColor(sd, prim, devNormalize(rd));
+}
+
+extern "C" __global__ void __intersection__splat_solid()
+{
+    const SplatSetData& sd =
+        *reinterpret_cast<const SplatSetData*>(optixGetSbtDataPointer());
+
+    const unsigned int prim = optixGetPrimitiveIndex();
+    const float4 mo = sd.meanOpacity[prim];
+
+    if (mo.w < 0.05f)
+    {
+        return;  // don't let near-invisible gaussians eat pick clicks
+    }
+
+    const float4 q = sd.quat[prim];   // (x, y, z, w)
+    const float4 s = sd.scale[prim];
+
+    // Rotation matrix rows from the unit quaternion
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+
+    const float3 r0 = make_float3(1.0f - 2.0f * (yy + zz), 2.0f * (xy - wz),        2.0f * (xz + wy));
+    const float3 r1 = make_float3(2.0f * (xy + wz),        1.0f - 2.0f * (xx + zz), 2.0f * (yz - wx));
+    const float3 r2 = make_float3(2.0f * (xz - wy),        2.0f * (yz + wx),        1.0f - 2.0f * (xx + yy));
+
+    const float3 invS = make_float3(1.0f / fmaxf(s.x, 1e-8f),
+                                    1.0f / fmaxf(s.y, 1e-8f),
+                                    1.0f / fmaxf(s.z, 1e-8f));
+
+    const float3 ro = optixGetObjectRayOrigin();
+    const float3 rd = optixGetObjectRayDirection();
+    const float3 oc = make_float3(ro.x - mo.x, ro.y - mo.y, ro.z - mo.z);
+
     const float3 ou = make_float3(
         (r0.x * oc.x + r1.x * oc.y + r2.x * oc.z) * invS.x,
         (r0.y * oc.x + r1.y * oc.y + r2.y * oc.z) * invS.y,
@@ -1813,67 +2072,7 @@ extern "C" __global__ void __intersection__splat()
         }
     }
 
-    // Ellipsoid gradient: ∇f ∝ R · diag(1/s) · u_hit  (object space, unnormalized)
-    const float3 nu = make_float3((ou.x + t * du.x) * invS.x,
-                                  (ou.y + t * du.y) * invS.y,
-                                  (ou.z + t * du.z) * invS.z);
-    const float3 nObj = make_float3(devDot(r0, nu), devDot(r1, nu), devDot(r2, nu));
-
-    optixReportIntersection(t, 0,
-        __float_as_uint(nObj.x),
-        __float_as_uint(nObj.y),
-        __float_as_uint(nObj.z));
-}
-
-// Only reached by NEE shadow rays (radiance rays disable anyhit).  Splats do
-// not occlude shadow rays in the debug visualization; volumetric transmittance
-// arrives with the compositing step.
-extern "C" __global__ void __anyhit__splat()
-{
-    optixIgnoreIntersection();
-}
-
-extern "C" __global__ void __closesthit__splat()
-{
-    PathVertex* vtx = unpackVertex(optixGetPayload_0(), optixGetPayload_1());
-
-    const SplatSetData& sd =
-        *reinterpret_cast<const SplatSetData*>(optixGetSbtDataPointer());
-
-    const unsigned int prim = optixGetPrimitiveIndex();
-
-    const float3 n_obj = make_float3(
-        __uint_as_float(optixGetAttribute_0()),
-        __uint_as_float(optixGetAttribute_1()),
-        __uint_as_float(optixGetAttribute_2()));
-
-    vtx->N   = devNormalize(optixTransformNormalFromObjectToWorldSpace(n_obj));
-    vtx->t   = optixGetRayTmax();
-    vtx->pos = optixGetWorldRayOrigin() + optixGetWorldRayDirection() * vtx->t;
-
-    // DC color: 0.5 + SH_C0 · f_dc, display-referred by 3DGS convention —
-    // linearize to match the renderer's working space.
-    const float4 fdc   = sd.sh0[prim];
-    const float  SH_C0 = 0.28209479177387814f;
-    const float3 color = make_float3(fmaxf(0.5f + SH_C0 * fdc.x, 0.0f),
-                                     fmaxf(0.5f + SH_C0 * fdc.y, 0.0f),
-                                     fmaxf(0.5f + SH_C0 * fdc.z, 0.0f));
-
-    vtx->albedo             = make_float3(0.0f, 0.0f, 0.0f);
-    vtx->emission           = srgbToLinear3(color);
-    vtx->roughness          = 1.0f;
-    vtx->metallic           = 0.0f;
-    vtx->transmission       = 0.0f;
-    vtx->ior                = 1.5f;
-    vtx->absorptionDistance = 1.0f;
-    vtx->scatteringCoeff    = make_float3(0.0f, 0.0f, 0.0f);
-    vtx->scatteringAnisotropy = 0.0f;
-    vtx->clearcoat          = 0.0f;
-    vtx->clearcoatRoughness = 0.0f;
-    vtx->thinWalled         = 0;
-
-    vtx->hit        = 1;
-    vtx->instanceId = ~0u;  // splats are never in the emissive-lights array
+    optixReportIntersection(t, 0);
 }
 
 // ─── 1px picking ─────────────────────────────────────────────────────────────

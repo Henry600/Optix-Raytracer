@@ -609,6 +609,7 @@ bool Application::tick()
         m_launchParams.accumBuffer       = m_accumBuffer.typedPtr<float4>();
         m_launchParams.sampleIndex       = m_sampleCount;
         m_launchParams.materials         = m_materialsBuffer.typedPtr<const MaterialData>();
+        m_launchParams.hasSplats         = (m_splatInstanceCount > 0) ? 1 : 0;
         m_launchParams.sceneTextures     = m_scene->textureObjects();
         m_launchParams.normalBuffer      = m_normalBuffer.typedPtr<float4>();
         m_launchParams.albedoBuffer      = m_albedoBuffer.typedPtr<float4>();

@@ -197,12 +197,10 @@ void Application::buildPipeline(const std::string& ptxDir)
     pgDesc.hitgroup.entryFunctionNameIS = "__intersection__implicit";
     OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgHitgroupImplicit));
 
+    // Splat volume gather: the IS accumulates gaussian responses into the ray
+    // payload and never reports an intersection, so no CH/AH are needed.
     pgDesc                              = {};
     pgDesc.kind                         = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
-    pgDesc.hitgroup.moduleCH            = m_module;
-    pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__splat";
-    pgDesc.hitgroup.moduleAH            = m_module;
-    pgDesc.hitgroup.entryFunctionNameAH = "__anyhit__splat";
     pgDesc.hitgroup.moduleIS            = m_module;
     pgDesc.hitgroup.entryFunctionNameIS = "__intersection__splat";
     OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgHitgroupSplat));
@@ -239,7 +237,7 @@ void Application::buildPipeline(const std::string& ptxDir)
     pgDesc.hitgroup.moduleCH            = m_module;
     pgDesc.hitgroup.entryFunctionNameCH = "__closesthit__pick";
     pgDesc.hitgroup.moduleIS            = m_module;
-    pgDesc.hitgroup.entryFunctionNameIS = "__intersection__splat";
+    pgDesc.hitgroup.entryFunctionNameIS = "__intersection__splat_solid";
     OPTIX_CHECK(optixProgramGroupCreate(m_optixContext, &pgDesc, 1, &pgOpts, nullptr, nullptr, &m_pgPickHitgroupSplat));
 
     // ── Pipeline ──────────────────────────────────────────────────────────────
@@ -409,6 +407,8 @@ void Application::buildSbt()
     std::vector<InstanceInfo> instList;
     walkSceneInstances(*m_scene, instList);
 
+    m_splatInstanceCount = 0;
+
     std::vector<HitGroupRecord> hitRecs(instList.size());
     for (size_t i = 0; i < instList.size(); ++i)
     {
@@ -423,6 +423,7 @@ void Application::buildSbt()
         {
             OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroupSplat, &hitRecs[i]));
             hitRecs[i].data.splat = m_scene->splatGpu(info.splatIdx).view();
+            ++m_splatInstanceCount;
         }
         else
         {

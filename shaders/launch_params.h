@@ -72,6 +72,10 @@ struct LaunchParams
     const EmissiveLightData* emissiveLights;
     int                      emissiveLightCount;
 
+    // 1 when the TLAS contains gaussian splat instances — enables the per-bounce
+    // splat volume gather trace in the raygen path loop.
+    int hasSplats;
+
     // Picking — only valid during a 1×1 pick launch; ignored by the normal raygen.
     float     pickU;      // normalised mouse X [0, 1]
     float     pickV;      // normalised mouse Y [0, 1]

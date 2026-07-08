@@ -3,6 +3,13 @@
 
 #include <cuda_runtime.h>  // float3, float2, uint3, cudaTextureObject_t
 
+// TLAS instance visibility masks.  Surface geometry and gaussian splat volumes
+// are traced separately: surface/shadow rays use VIS_MASK_GEOMETRY so splats
+// never shorten or occlude them; the splat volume gather traces VIS_MASK_SPLAT
+// only.  Pick rays trace 0xFF to hit both.
+#define VIS_MASK_GEOMETRY 0x01u
+#define VIS_MASK_SPLAT    0x02u
+
 // GPU view of one mesh — placed in the SBT hit group record per mesh instance.
 // In a hit shader: const MeshData* mesh = (const MeshData*)optixGetSbtDataPointer();
 struct MeshData
