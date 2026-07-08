@@ -185,7 +185,16 @@ void Application::initImGui()
     // the FA glyphs merge INTO the default ProggyClean font (not replacing it).
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.Fonts->AddFontDefault();
+        // Explicit SizePixels keeps the font's reference size explicit — the FA
+        // merge below uses an explicit 13px size, and ImGui 1.92 asserts when
+        // merging explicit-size fonts into an implicit-size destination.
+        // PixelSnapH must be re-set manually: ImGui only defaults it to true for
+        // ProggyClean when no config template is passed.
+        ImFontConfig defaultFontCfg;
+        defaultFontCfg.SizePixels = 13.0f;
+        defaultFontCfg.PixelSnapH = true;
+
+        io.Fonts->AddFontDefaultBitmap(&defaultFontCfg);
         if (std::filesystem::exists("fonts/fa-solid-900.ttf"))
         {
             // Restrict to the exact codepoints used in icons.h — avoids
@@ -203,8 +212,7 @@ void Application::initImGui()
             cfg.MergeMode        = true;
             cfg.PixelSnapH       = true;
             cfg.GlyphMinAdvanceX = 13.0f;
-            io.Fonts->AddFontFromFileTTF(
-                "fonts/fa-solid-900.ttf", 13.0f, &cfg, icon_ranges);
+            io.Fonts->AddFontFromFileTTF("fonts/fa-solid-900.ttf", 13.0f, &cfg, icon_ranges);
         }
     }
 
