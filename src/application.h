@@ -111,6 +111,10 @@ private:
     // hasSplats launch param so splat-free scenes skip the volume gather trace.
     int m_splatInstanceCount = 0;
 
+    // Number of surface geometry (mesh / implicit) instances in the SBT/TLAS —
+    // 0 lets splat-only scenes skip the per-bounce surface trace.
+    int m_geometryInstanceCount = 0;
+
     // Per-TLAS-instance SplatInstanceData array (device).  Refreshed every
     // frame while splats exist — node transforms can change without an SBT
     // rebuild and the world-to-object rotations must follow.

@@ -351,7 +351,15 @@ void Application::loadSplat(const std::string& path)
 
     auto node            = std::make_unique<SplatNode>();
     node->name           = data.name.empty() ? "Splat" : data.name;
-    node->localTransform = mat4Identity();
+
+    // 3DGS/SOG datasets use the COLMAP camera-style frame, which appears
+    // flipped in our Y-up world.  Compensate with a default 180° Z rotation
+    // on the node — visible and adjustable in Node Properties rather than
+    // silently baked into the data.
+    node->localTransform          = mat4Identity();
+    node->localTransform.m[0][0]  = -1.0f;
+    node->localTransform.m[1][1]  = -1.0f;
+
     node->splatIndex     = m_scene->addSplat(std::move(data));
 
     try
@@ -610,6 +618,7 @@ bool Application::tick()
         m_launchParams.sampleIndex       = m_sampleCount;
         m_launchParams.materials         = m_materialsBuffer.typedPtr<const MaterialData>();
         m_launchParams.hasSplats         = (m_splatInstanceCount > 0) ? 1 : 0;
+        m_launchParams.hasGeometry       = (m_geometryInstanceCount > 0) ? 1 : 0;
         if (m_splatInstanceCount > 0)
         {
             updateSplatInstances();  // follow live node transform edits

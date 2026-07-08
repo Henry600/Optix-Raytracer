@@ -409,7 +409,8 @@ void Application::buildSbt()
     std::vector<InstanceInfo> instList;
     walkSceneInstances(*m_scene, instList);
 
-    m_splatInstanceCount = 0;
+    m_splatInstanceCount    = 0;
+    m_geometryInstanceCount = 0;
 
     std::vector<HitGroupRecord> hitRecs(instList.size());
     for (size_t i = 0; i < instList.size(); ++i)
@@ -420,6 +421,7 @@ void Application::buildSbt()
             OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroupImplicit, &hitRecs[i]));
             hitRecs[i].data.implicit.type          = static_cast<unsigned int>(info.implicitType);
             hitRecs[i].data.implicit.materialIndex = info.materialIdx;
+            ++m_geometryInstanceCount;
         }
         else if (info.kind == InstKind::Splat)
         {
@@ -430,6 +432,7 @@ void Application::buildSbt()
         else
         {
             OPTIX_CHECK(optixSbtRecordPackHeader(m_pgHitgroup, &hitRecs[i]));
+            ++m_geometryInstanceCount;
             if (m_scene->hasAccel())
             {
                 const auto ptrs                    = m_scene->meshDevicePtrs(info.meshIdx);

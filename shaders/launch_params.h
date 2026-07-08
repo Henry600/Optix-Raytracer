@@ -76,6 +76,10 @@ struct LaunchParams
     // splat volume gather trace in the raygen path loop.
     int hasSplats;
 
+    // 1 when the TLAS contains surface geometry (mesh / implicit) instances.
+    // 0 lets splat-only scenes skip the per-bounce surface trace entirely.
+    int hasGeometry;
+
     // Per-TLAS-instance splat data, indexed by instance index (length = total
     // instance count; zeroed for non-splat instances).  Null when hasSplats == 0.
     const SplatInstanceData* splatInstances;

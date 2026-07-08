@@ -871,14 +871,18 @@ extern "C" __global__ void __raygen__renderFrame()
         uint32_t p0, p1;
         packPointer(&vtx, p0, p1);
 
-        optixTrace(
-            optixLaunchParams.traversable,
-            rayOrig, rayDir,
-            1e-3f, 1e30f, 0.0f,
-            OptixVisibilityMask(VIS_MASK_GEOMETRY),  // splats composite in a separate gather
-            OPTIX_RAY_FLAG_DISABLE_ANYHIT,  // anyhit only needed for shadow rays
-            0, 1, 0,
-            p0, p1);
+        // Splat-only scenes have nothing for this trace to hit — skip it.
+        if (optixLaunchParams.hasGeometry)
+        {
+            optixTrace(
+                optixLaunchParams.traversable,
+                rayOrig, rayDir,
+                1e-3f, 1e30f, 0.0f,
+                OptixVisibilityMask(VIS_MASK_GEOMETRY),  // splats composite in a separate gather
+                OPTIX_RAY_FLAG_DISABLE_ANYHIT,  // anyhit only needed for shadow rays
+                0, 1, 0,
+                p0, p1);
+        }
 
         // ── Gaussian splat volume segment ────────────────────────────────────
         // Composite splats between the ray origin and the surface hit (or to
