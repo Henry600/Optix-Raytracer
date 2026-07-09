@@ -10,6 +10,15 @@
 #include <cuda_runtime.h>  // uchar4, uint2
 #include "scene_data.h"     // MaterialData
 
+// Background/sky rendering mode — selected in the Environment panel.
+// HDRI falls back to Procedural in sampleBackground() when no env map is loaded.
+enum SkyMode
+{
+    SKY_MODE_CONSTANT   = 0,  // flat skyColor, no gradient or texture
+    SKY_MODE_PROCEDURAL = 1,  // built-in horizon-to-zenith gradient
+    SKY_MODE_HDRI       = 2,  // equirectangular env map (envMap)
+};
+
 struct LaunchParams
 {
     // Display output — linear float4 for the scRGB FP16 swapchain.
@@ -32,8 +41,11 @@ struct LaunchParams
     // Equirectangular (lat-long) environment map. 0 = not loaded; raygen falls
     // back to the procedural sky gradient when this is 0.
     cudaTextureObject_t envMap;
-    float               envMapRotation;  // azimuth offset in radians (Shift+RMB drag)
+    float               envMapRotation;  // azimuth offset in radians (Shift+RMB drag or slider)
     float               envExposure;     // exposure in EV stops; applied as 2^n to env radiance
+
+    int    skyMode;   // SkyMode — constant / procedural / HDRI (see above)
+    float3 skyColor;  // sRGB; tints every sky mode, and is the exact output for SKY_MODE_CONSTANT
 
     // HDRI importance-sampling CDFs — null when no env map is loaded.
     // marginalCdf[j]      = P(row ≤ j), normalised prefix-sum of row energies.

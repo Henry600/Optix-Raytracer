@@ -66,32 +66,6 @@ void Application::drawRaytracerPanel()
         }
     }
 
-    ImGui::SameLine();
-    if (ImGui::Button("Open Env Map..."))
-    {
-        nfdu8char_t*    outPath = nullptr;
-        nfdfilteritem_t filters[] = { { "HDR Image", "exr,hdr" } };
-        if (NFD_OpenDialogU8(&outPath, filters, 1, nullptr) == NFD_OKAY)
-        {
-            const std::string p = reinterpret_cast<const char*>(outPath);
-            loadEnvMap(p);
-            m_hdriBrowser.setActivePath(p);
-            NFD_FreePathU8(outPath);
-        }
-    }
-
-    if (m_envMap.gpuTex != 0)
-    {
-        ImGui::SameLine();
-        if (ImGui::Button("Clear"))
-        {
-            m_envMap.free();
-            m_envMapPath.clear();
-            m_envMapError.clear();
-            m_accumDirty = true;
-        }
-    }
-
     if (!m_sceneFilePath.empty())
     {
         const std::string filename =
@@ -111,26 +85,6 @@ void Application::drawRaytracerPanel()
     {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
                            "Error: %s", m_loadError.c_str());
-    }
-
-    if (!m_envMapPath.empty())
-    {
-        ImGui::Text("Env: %s  (%d x %d)", m_envMapPath.c_str(),
-                    m_envMap.width, m_envMap.height);
-    }
-    else if (!m_envMapError.empty())
-    {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-                           "Error: %s", m_envMapError.c_str());
-    }
-    else
-    {
-        ImGui::TextDisabled("No environment map");
-    }
-
-    if (ImGui::SliderFloat("Env Exposure (EV)", &m_envExposure, -10.0f, 10.0f, "%.1f"))
-    {
-        m_accumDirty = true;
     }
 
     ImGui::Separator();

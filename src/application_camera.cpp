@@ -65,8 +65,10 @@ void Application::updateCamera()
 
         if (shiftHeld)
         {
-            // Rotate environment map azimuthally — same sensitivity as camera rotation
+            // Rotate environment map azimuthally — same sensitivity as camera rotation.
+            // Wrapped to (-pi, pi] so it stays in range for the Environment panel's slider.
             m_envMapRotation += dx * m_rotSpeed;
+            m_envMapRotation = fmodf(m_envMapRotation + 3.14159265f, 6.28318531f) - 3.14159265f;
             m_accumDirty = true;
         }
         else if (ctrlHeld)

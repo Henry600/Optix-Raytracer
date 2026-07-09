@@ -262,6 +262,23 @@ void Application::drawResourcesPanel()
                             }
                         }
 
+                        {
+                            bool sc = mats[i].shadowCatcher != 0;
+                            if (ImGui::Checkbox("Shadow Catcher", &sc))
+                            {
+                                mats[i].shadowCatcher = sc ? 1 : 0;
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::IsItemHovered())
+                            {
+                                ImGui::SetTooltip(
+                                    "Invisible to camera/GI rays — shows the background\n"
+                                    "instead of shading, but still catches shadows cast\n"
+                                    "by other objects.  Use to composite geometry onto\n"
+                                    "an HDRI or background plate.");
+                            }
+                        }
+
                         ImGui::Separator();
                         ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.6f);
                         if (ImGui::DragFloat2("Tiling",  &mats[i].uvTransform.x, 0.01f, 0.0f, 0.0f, "%.3f"))
@@ -295,7 +312,7 @@ void Application::drawResourcesPanel()
         const std::string texHeader = "Textures (" + std::to_string(textures.size()) + ")";
 
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 8.0f));
-        const bool texOpen = ImGui::CollapsingHeader(texHeader.c_str());
+        const bool texOpen = ImGui::CollapsingHeader(texHeader.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
         ImGui::PopStyleVar();
         if (texOpen)
         {

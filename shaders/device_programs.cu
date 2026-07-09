@@ -73,6 +73,7 @@ struct PathVertex
     float  clearcoat;            // clearcoat layer intensity [0, 1]
     float  clearcoatRoughness;   // clearcoat layer roughness [0, 1]
     int    thinWalled;           // 1 = zero-thickness surface; pass through without refraction
+    int    shadowCatcher;        // 1 = invisible to camera/GI rays; shows background + shadow only
     float        t;          // ray travel distance to this hit (Beer-Lambert)
     unsigned int instanceId; // TLAS instance index; ~0u when not set (miss / mesh)
     int          hit;        // 1 = geometry hit, 0 = ray escaped to background
@@ -295,9 +296,11 @@ bool devRefract(float3 v, float3 n, float eta, float3& out)
 static __forceinline__ __device__
 float3 sampleBackground(float3 dir)
 {
-    const float exposure = exp2f(optixLaunchParams.envExposure);  // EV stops → linear scale
+    const float  exposure = exp2f(optixLaunchParams.envExposure);  // EV stops → linear scale
+    const float3 tint     = srgbToLinear3(optixLaunchParams.skyColor);
 
-    if (optixLaunchParams.envMap != 0)
+    float3 base;
+    if (optixLaunchParams.skyMode == SKY_MODE_HDRI && optixLaunchParams.envMap != 0)
     {
         const float kInvPi  = 0.31830988618f;
         const float kInv2Pi = 0.15915494309f;
@@ -306,11 +309,20 @@ float3 sampleBackground(float3 dir)
         const float4 s = tex2D<float4>(optixLaunchParams.envMap,
                                        phi * kInv2Pi + 0.5f,
                                        theta * kInvPi);
-        return make_float3(s.x, s.y, s.z) * exposure;
+        base = make_float3(s.x, s.y, s.z);
     }
-    // Procedural sky:
-    return devMix(make_float3(0.25f, 0.3f, 0.6f), make_float3(0.8f, 1.1f, 3.0f),
-                  devClamp01(dir.y)) * exposure;
+    else if (optixLaunchParams.skyMode == SKY_MODE_CONSTANT)
+    {
+        base = make_float3(1.0f, 1.0f, 1.0f);
+    }
+    else
+    {
+        // Procedural sky (also the HDRI-mode fallback when no env map is loaded):
+        base = devMix(make_float3(0.25f, 0.3f, 0.6f), make_float3(0.8f, 1.1f, 3.0f),
+                      devClamp01(dir.y));
+    }
+
+    return base * tint * exposure;
 }
 
 // ─── HDRI importance-sampling helpers ────────────────────────────────────────
@@ -771,35 +783,9 @@ extern "C" __global__ void __raygen__renderFrame()
     const uint3        dim   = optixGetLaunchDimensions();
     const unsigned int fbIdx = idx.y * dim.x + idx.x;
 
-    // ── No scene: show env map preview or UV placeholder ──────────────────────
-    if (optixLaunchParams.traversable == 0)
-    {
-        if (optixLaunchParams.envMap != 0)
-        {
-            const float nx  = ((float)idx.x + 0.5f) / (float)dim.x * 2.0f - 1.0f;
-            const float ny  = ((float)idx.y + 0.5f) / (float)dim.y * 2.0f - 1.0f;
-            const float3 dir = devNormalize(
-                optixLaunchParams.U * nx +
-                optixLaunchParams.V * ny +
-                optixLaunchParams.W);
-            writeDisplay(fbIdx, sampleBackground(dir));
-        }
-        else
-        {
-            // UV debug gradient — linearise for the scRGB buffer; the UI
-            // pipeline applies the paper-white scale when rendering the image.
-            const float u = (float)idx.x / (float)dim.x;
-            const float v = (float)idx.y / (float)dim.y;
-            optixLaunchParams.colorBuffer[fbIdx] = make_float4(
-                powf(u,    2.2f),
-                powf(v,    2.2f),
-                powf(0.5f, 2.2f),
-                1.0f);
-        }
-        return;
-    }
-
     // ── Path tracing ──────────────────────────────────────────────────────────
+    // traversable == 0 (no scene / everything hidden) never reaches this raygen —
+    // application.cpp skips optixLaunch entirely in that case.
 
     // Seed: mix pixel index and sample index for uncorrelated sequences
     uint32_t seed = fbIdx * 1973u + optixLaunchParams.sampleIndex * 9277u + 127u;
@@ -938,6 +924,90 @@ extern "C" __global__ void __raygen__renderFrame()
             {
                 radiance += throughput * bg;
             }
+            break;
+        }
+
+        // ── Shadow catcher ────────────────────────────────────────────────────
+        // Invisible surface: shows the background along the incoming ray
+        // direction, darkened by how occluded this point's sky hemisphere is.
+        // No BSDF, no further bounces — shadows only, no GI or reflections
+        // are contributed back into the scene from this hit.
+        //
+        // The shadow-ray direction is importance-sampled toward the env map's
+        // bright regions (or an emissive light) so a blocker specifically in
+        // front of the sun reads as a hard directional shadow rather than flat
+        // ambient occlusion.  If that sample lands below the local horizon
+        // (cosI <= 0) it falls back to a cosine-weighted hemisphere sample,
+        // which is always valid — every launch must contribute *some* value to
+        // the per-pixel accumulator, so treating an invalid sample as
+        // "unshadowed" would bias the average away from ever going fully dark
+        // under total occlusion.
+        if (vtx.shadowCatcher)
+        {
+            const float3 bg  = sampleBackground(rayDir);
+            const float3 Nfc = (devDot(vtx.N, -rayDir) >= 0.0f) ? vtx.N : -vtx.N;
+
+            float3 skyDir;
+            float  skyTMax = 1e30f;
+            bool   haveDir = false;
+
+            if (optixLaunchParams.envMarginalCdf)
+            {
+                float3 neeDir; float neePdf;
+                sampleEnvMapIS(rnd(seed), rnd(seed), neeDir, neePdf);
+                if (neePdf > 0.0f && devDot(neeDir, Nfc) > 0.0f)
+                {
+                    skyDir  = neeDir;
+                    haveDir = true;
+                }
+            }
+            else if (optixLaunchParams.emissiveLightCount > 0)
+            {
+                float3 lightPos, lightN;
+                const EmissiveLightData* selectedLight = nullptr;
+                float lightPdf = 0.0f;
+                if (sampleEmissiveLight(vtx.pos, rnd(seed), rnd(seed), rnd(seed), rnd(seed),
+                        lightPos, lightN, selectedLight, lightPdf))
+                {
+                    const float3 toLight = lightPos - vtx.pos;
+                    const float  dist    = sqrtf(devDot(toLight, toLight));
+                    const float3 dir     = toLight * (1.0f / dist);
+                    if (devDot(dir, Nfc) > 0.0f)
+                    {
+                        skyDir  = dir;
+                        skyTMax = dist - 2e-3f;
+                        haveDir = true;
+                    }
+                }
+            }
+
+            if (!haveDir)
+            {
+                float3 T, B;
+                buildONB(Nfc, T, B);
+                const float3 d = cosineSampleHemisphere(rnd(seed), rnd(seed));
+                skyDir  = devNormalize(T * d.x + B * d.y + Nfc * d.z);
+                skyTMax = 1e30f;
+            }
+
+            uint32_t shadowVis = 0u;
+            uint32_t shadowFR  = __float_as_uint(1.0f);
+            uint32_t shadowFG  = __float_as_uint(1.0f);
+            uint32_t shadowFB  = __float_as_uint(1.0f);
+            optixTrace(
+                optixLaunchParams.traversable,
+                vtx.pos + Nfc * 1e-3f, skyDir,
+                1e-3f, skyTMax, 0.0f,
+                OptixVisibilityMask(VIS_MASK_GEOMETRY),
+                OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
+                0, 1, 1,
+                shadowVis, shadowFR, shadowFG, shadowFB);
+
+            const float3 shadow = shadowVis
+                ? make_float3(__uint_as_float(shadowFR), __uint_as_float(shadowFG), __uint_as_float(shadowFB))
+                : make_float3(0.0f, 0.0f, 0.0f);
+
+            radiance += throughput * bg * shadow;
             break;
         }
 
@@ -1629,6 +1699,7 @@ extern "C" __global__ void __closesthit__radiance()
         vtx->clearcoat            = mat.clearcoat;
         vtx->clearcoatRoughness = mat.clearcoatRoughness;
         vtx->thinWalled         = mat.thinWalled;
+        vtx->shadowCatcher      = mat.shadowCatcher;
     }
     else
     {
@@ -1642,6 +1713,7 @@ extern "C" __global__ void __closesthit__radiance()
         vtx->clearcoat          = 0.0f;
         vtx->clearcoatRoughness = 0.0f;
         vtx->thinWalled         = 0;
+        vtx->shadowCatcher      = 0;
     }
 
     vtx->hit        = 1;
@@ -1886,6 +1958,7 @@ extern "C" __global__ void __closesthit__implicit()
         vtx->clearcoat            = mat.clearcoat;
         vtx->clearcoatRoughness   = mat.clearcoatRoughness;
         vtx->thinWalled           = mat.thinWalled;
+        vtx->shadowCatcher        = mat.shadowCatcher;
     }
     else
     {
@@ -1899,6 +1972,7 @@ extern "C" __global__ void __closesthit__implicit()
         vtx->clearcoat          = 0.0f;
         vtx->clearcoatRoughness = 0.0f;
         vtx->thinWalled         = 0;
+        vtx->shadowCatcher      = 0;
     }
 
     vtx->hit        = 1;

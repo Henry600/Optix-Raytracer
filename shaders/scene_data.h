@@ -36,8 +36,8 @@ struct MaterialData
     int    roughnessTexture = -1;  // index into device texture array; red channel; -1 = no texture
     float  metallic         = 0.0f;
 
-    float3 emission         = { 0.0f, 0.0f, 0.0f };
-    float  emissionScale    = 1.0f;
+    float3 emission         = { 1.0f, 1.0f, 1.0f };
+    float  emissionScale    = 0.0f;
     int    emissionTexture  = -1;   // index into device texture array; -1 = no texture
 
     float  transmission          = 0.0f;  // 0 = opaque, 1 = fully transmissive
@@ -50,6 +50,12 @@ struct MaterialData
     float  clearcoatRoughness = 0.0f;  // clearcoat layer roughness [0, 1]
 
     int    thinWalled = 0;  // 1 = invisible to NEE shadow rays (pass-through)
+
+    // 1 = invisible to camera/GI rays (shows the background along the ray
+    // direction instead of shading itself) but still occludes NEE shadow rays
+    // from other surfaces and its own light samples — a "shadow catcher" for
+    // compositing geometry onto an HDRI/background plate.
+    int    shadowCatcher = 0;
 };
 
 // Device-side mirror of ImplicitType from implicit_node.h.

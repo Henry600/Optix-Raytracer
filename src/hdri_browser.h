@@ -109,7 +109,7 @@ private:
     std::string             m_pendingFolder;  // set by draw(); consumed by uploadPending()
     std::string             m_cacheDir;       // UTF-8; empty = cache disabled
     std::vector<ThumbEntry> m_entries;        // accessed from main thread only
-    int                     m_thumbSizeIdx = 0; // 0=Large, 1=Medium, 2=Small
+    int                     m_thumbSizeIdx = 2; // 0=Large, 1=Medium, 2=Small
 
     // ── Thread pool ───────────────────────────────────────────────────────────
     std::vector<std::thread>    m_workers;

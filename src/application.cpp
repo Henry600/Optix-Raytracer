@@ -505,6 +505,7 @@ void Application::loadEnvMap(const std::string& path)
         m_envMap.uploadToGpu();
         m_envMap.buildCdf();
         m_envMapPath = std::filesystem::path(path).filename().string();
+        m_skyMode    = SKY_MODE_HDRI;
         m_accumDirty = true;  // new env map = new lighting; clear accumulated samples
     }
 }
@@ -615,11 +616,18 @@ bool Application::tick()
                                          : 2;
         m_launchParams.fbSize            = make_uint2(static_cast<unsigned int>(m_viewportWidth), static_cast<unsigned int>(m_viewportHeight));
         m_launchParams.traversable       = m_scene->traversable();
-        m_launchParams.envMap            = m_envMap.gpuTex;
+
+        // Only hand the env map / CDFs to the shader when HDRI mode is actually
+        // selected — keeps the loaded texture around (fast to switch back to)
+        // without it being sampled for background or NEE while another mode is active.
+        const bool useHdri               = (m_skyMode == SKY_MODE_HDRI) && (m_envMap.gpuTex != 0);
+        m_launchParams.skyMode           = m_skyMode;
+        m_launchParams.skyColor          = m_skyColor;
+        m_launchParams.envMap            = useHdri ? m_envMap.gpuTex : 0;
         m_launchParams.envMapRotation    = m_envMapRotation;
         m_launchParams.envExposure       = m_envExposure;
-        m_launchParams.envMarginalCdf    = m_envMap.cdfMarginal    ? reinterpret_cast<const float*>(m_envMap.cdfMarginal)    : nullptr;
-        m_launchParams.envConditionalCdf = m_envMap.cdfConditional ? reinterpret_cast<const float*>(m_envMap.cdfConditional) : nullptr;
+        m_launchParams.envMarginalCdf    = (useHdri && m_envMap.cdfMarginal)    ? reinterpret_cast<const float*>(m_envMap.cdfMarginal)    : nullptr;
+        m_launchParams.envConditionalCdf = (useHdri && m_envMap.cdfConditional) ? reinterpret_cast<const float*>(m_envMap.cdfConditional) : nullptr;
         m_launchParams.envCdfW           = m_envMap.width;
         m_launchParams.envCdfH           = m_envMap.height;
         m_launchParams.accumBuffer       = m_accumBuffer.typedPtr<float4>();
@@ -894,12 +902,12 @@ bool Application::tick()
         // currently selected scene-graph node.
         // Gizmo operation keyboard shortcuts — active whenever a node is selected
         // and ImGui is not consuming the keyboard for text input.
-        // 1 = Scale  |  2 = Rotate  |  3 = Translate
+        // 1 = Translate  |  2 = Rotate  |  3 = Scale
         if (!ImGui::GetIO().WantTextInput)
         {
             if (ImGui::IsKeyPressed(ImGuiKey_1))
             {
-                m_gizmoOp = ImGuizmo::SCALE;
+                m_gizmoOp = ImGuizmo::TRANSLATE;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_2))
             {
@@ -907,7 +915,7 @@ bool Application::tick()
             }
             if (ImGui::IsKeyPressed(ImGuiKey_3))
             {
-                m_gizmoOp = ImGuizmo::TRANSLATE;
+                m_gizmoOp = ImGuizmo::SCALE;
             }
         }
 
@@ -991,16 +999,7 @@ bool Application::tick()
     drawResourcesPanel();
     drawSceneGraphPanel();
     drawNodePropertiesPanel();
-
-    // ── HDRI Browser window (always visible, no close button) ────────────────
-    {
-        std::string selected;
-        if (m_hdriBrowser.draw(nullptr, selected) && !selected.empty())
-        {
-            loadEnvMap(selected);
-            m_hdriBrowser.setActivePath(selected);
-        }
-    }
+    drawEnvironmentPanel();
 
     ImGui::Render();
 

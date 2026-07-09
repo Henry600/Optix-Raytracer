@@ -217,6 +217,31 @@ if(NOT EXISTS "${FA_FONT_PATH}")
     endif()
 endif()
 
+# ── Group third-party targets in Solution Explorer ────────────────────────────
+# GLFW's own CMakeLists turns on USE_FOLDERS (and puts its own helper targets
+# under "GLFW3"); without an explicit FOLDER every other fetched target
+# (tinygltf, OpenEXR/Imath, libwebp, miniz, nfd, CTest's dashboard targets, ...)
+# then sits flat at the solution root.  Recursively walk every directory scope
+# defined so far and fold anything that doesn't already have a FOLDER (leaving
+# GLFW's own grouping untouched) under one "ThirdParty" folder.  Run before
+# add_subdirectory(shaders)/(src) so our own targets are left ungrouped at the root.
+function(_group_third_party_targets dir folder)
+    get_property(_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_tgt IN LISTS _targets)
+        get_target_property(_existing "${_tgt}" FOLDER)
+        if(NOT _existing)
+            set_target_properties("${_tgt}" PROPERTIES FOLDER "${folder}")
+        endif()
+    endforeach()
+
+    get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(_sub IN LISTS _subdirs)
+        _group_third_party_targets("${_sub}" "${folder}")
+    endforeach()
+endfunction()
+
+_group_third_party_targets("${CMAKE_SOURCE_DIR}" "ThirdParty")
+
 # ── Project subdirectories ────────────────────────────────────────────────────
 add_subdirectory(shaders)   # device_programs OBJECT library (PTX)
 add_subdirectory(src)       # OptixRaytracer executable

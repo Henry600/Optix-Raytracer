@@ -182,6 +182,10 @@ private:
     float       m_envMapRotation = 0.0f;
     float       m_envExposure   = 0.0f;
 
+    // Sky / background — see SkyMode in launch_params.h
+    int    m_skyMode  = SKY_MODE_PROCEDURAL;
+    float3 m_skyColor = { 1.0f, 1.0f, 1.0f };  // sRGB
+
     // Hot-reload state
     std::string                      m_ptxDir;
     std::filesystem::file_time_type  m_ptxWriteTime = {};
@@ -230,6 +234,7 @@ private:
     void drawResourcesPanel();
     void drawSceneGraphPanel();
     void drawNodePropertiesPanel();
+    void drawEnvironmentPanel();
 };
 
 #endif // OPTIX_RAYTRACER_APPLICATION_H

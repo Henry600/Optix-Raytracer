@@ -13,8 +13,9 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 - **PBR materials** (GGX-VNDF microfacet BRDF) — albedo, roughness, metallic, clearcoat, clearcoat roughness, emission, transmission, IOR, and absorption distance; sRGB albedo textures and colour values are linearised before lighting calculations
 - **Probabilistic lobe selection** — clearcoat → specular → diffuse/refraction, each weighted by Fresnel probability for energy conservation; lobe selection uses the exact dielectric Fresnel equation (not Schlick) so IOR = 1 materials are correctly invisible at all angles
 - **Stochastic refraction** — rough dielectric transmission with Snell's law and GGX microfacet normal sampling; Beer-Lambert volumetric absorption for coloured glass (absorption accumulates over distance, not at the surface); **nested dielectrics** — a per-path medium stack tracks the enclosing material IOR and absorption so overlapping or nested glass objects refract and attenuate correctly; **thin-walled glass** mode skips volume absorption and tints NEE shadow rays with the glass colour for correct single-surface light filtering
-- **Environment lighting** — equirectangular EXR maps (`.exr`, all codecs: NONE / RLE / ZIP / PIZ / PXR24 / B44 / DWAA / DWAB) or Radiance HDR maps (`.hdr`) or procedural sky gradient, with rotation and exposure (EV) controls; NaN and inf pixels are clamped at load time (NaN → 0, inf → 65504) so over-bright sources never corrupt thumbnails or the CDF
+- **Environment lighting** — three independently selectable sky modes: **Constant** colour, **Procedural** horizon-to-zenith gradient, or **HDRI**; equirectangular EXR maps (`.exr`, all codecs: NONE / RLE / ZIP / PIZ / PXR24 / B44 / DWAA / DWAB) or Radiance HDR maps (`.hdr`) drive HDRI mode; a shared rotation, exposure (EV), and colour multiplier apply across all three modes; NaN and inf pixels are clamped at load time (NaN → 0, inf → 65504) so over-bright sources never corrupt thumbnails or the CDF
 - **HDRI importance sampling** — 2D luminance CDF built at load time; NEE fires shadow rays toward bright env-map regions at every diffuse and specular (GGX) bounce; MIS power heuristic with the GGX VNDF PDF prevents double-counting on specular escape paths
+- **Shadow-catcher material** — a per-material toggle that renders a surface invisible to camera/GI rays (showing the sky/background through it) while still darkening under shadows cast by other geometry; the shadow-ray direction is importance-sampled toward the env map so occluders in front of a bright sun read as a hard directional shadow rather than flat ambient occlusion; useful for compositing rendered objects onto an HDRI or background plate
 - **Emissive mesh / implicit NEE with MIS** — direct illumination from emissive surfaces is sampled at every diffuse and specular bounce; area-to-solid-angle Jacobian handles non-uniform scale correctly; MIS power heuristic combines emissive NEE, HDRI NEE, and BSDF strategies so emissive geometry integrates with the same noise-reducing efficiency as the environment map
 - **Thin-lens depth of field** — focal length, sensor size, f-stop, focus distance, and adjustable bokeh edge bias
 - **scRGB FP16 swapchain with automatic SDR fallback** — on Windows with HDR enabled, presents through `VK_FORMAT_R16G16B16A16_SFLOAT` + `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`; on displays without HDR, automatically falls back to `VK_FORMAT_B8G8R8A8_UNORM` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` with Reinhard tone-mapping and gamma encoding; no configuration required
@@ -39,8 +40,9 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 | Panel | Contents |
 |---|---|
 | **Viewport** | Live rendered image, resizes dynamically; left-click to select scene nodes via OptiX pick ray |
-| **Raytracer** | GPU stats, sample count, denoiser toggle, environment controls, HDR output toggle, paper-white slider (active when Windows HDR is on) |
-| **Resources** | Collapsible sub-categories: **Materials** (per-material PBR editor with albedo swatch preview) and **Textures** (loaded scene textures with dimensions and format) |
+| **Raytracer** | GPU stats, sample count, denoiser toggle, HDR output toggle, paper-white slider (active when Windows HDR is on) |
+| **Environment** | Sky Mode selector (Constant / Procedural / HDRI), sky colour multiplier, rotation slider, exposure (EV) slider, Open/Clear env map buttons, and the HDRI Browser thumbnail grid |
+| **Resources** | Collapsible sub-categories (Textures expanded by default): **Materials** (per-material PBR editor with albedo swatch preview, thin-walled and shadow-catcher toggles) and **Textures** (loaded scene textures with dimensions and format) |
 | **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; drag to reorder or reparent nodes; **eye icon** (right-aligned on each row) toggles node visibility — hiding a node excludes its entire subtree from the TLAS, SBT, and emissive light list; hidden nodes are dimmed in the tree; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
 | **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
@@ -130,7 +132,7 @@ configure.bat          :: Generate build\OptixRaytracer.sln
 configure.bat --clean  :: Wipe CMake cache first, then regenerate
 ```
 
-Open `build\OptixRaytracer.sln`. **OptixRaytracer** is the startup project — press **F5** to run. Re-run `configure.bat` after adding/removing source files or changing `CMakeLists.txt`.
+Open `build\OptixRaytracer.sln`. **OptixRaytracer** is the startup project — press **F5** to run. Re-run `configure.bat` after adding/removing source files or changing `CMakeLists.txt`. Fetched third-party targets (OpenEXR, Imath, libwebp, ImGui, miniz, nfd, ...) are grouped under a **ThirdParty** Solution Explorer folder to keep the project list readable; GLFW keeps its own "GLFW3" grouping.
 
 **Manual CMake:**
 
@@ -169,7 +171,7 @@ cmake --build build --config Release --parallel
 | **Eye icon in Scene Graph** | Toggle node visibility; hides the entire subtree from rendering without deleting it |
 | **Drag gizmo handle** | Translate / rotate / scale the selected node |
 | **Translate / Rotate / Scale buttons** | Switch gizmo operation (Node Properties panel) |
-| **1 / 2 / 3** | Keyboard shortcut: Scale / Rotate / Translate |
+| **1 / 2 / 3** | Keyboard shortcut: Translate / Rotate / Scale |
 | **Local / World buttons** | Switch gizmo reference space (Node Properties panel) |
 | **Open glTF…** | Browse for `.gltf` or `.glb` scene file |
 | **Open Env Map…** | Browse for an equirectangular environment map (`.exr` or `.hdr`) |
@@ -209,10 +211,12 @@ Optix-Raytracer/
     ├── application_pipeline.cpp    OptiX pipeline, program groups, SBT, and 1px pick launch
     ├── application_camera.cpp      Free-fly camera controller and camera-node sync
     ├── cuda_optix_check.h          CUDA_CHECK / OPTIX_CHECK error macros (shared across TUs)
-    ├── ui_raytracer_panel.cpp      Raytracer panel: GPU stats, scene/env controls, denoiser, HDR
+    ├── ui_raytracer_panel.cpp      Raytracer panel: GPU stats, scene stats, denoiser, HDR
     ├── ui_resources_panel.cpp      Resources panel: full PBR material editor, texture list
     ├── ui_scene_graph_panel.cpp    Scene Graph panel: node hierarchy tree, Add Implicit Shape
     ├── ui_node_properties_panel.cpp Node Properties panel: TRS editor, per-type settings
+    ├── ui_environment_panel.cpp    Environment panel: sky mode, env map load/clear, rotation/
+    │                               exposure/colour, HDRI Browser
     ├── gpu_buffer.h                RAII CUDA device allocation (GPUBuffer): alloc / free /
     │                               upload / download / clear; non-copyable, movable
     ├── vulkan_context.h/.cpp       Vulkan device, swapchain, render pass, display image,
@@ -278,7 +282,7 @@ The scRGB swapchain was not selected — either Windows HDR is disabled for the 
 The Vulkan validation layer may be printing errors to stderr. Run from a terminal to see them. Common causes: outdated driver (update to ≥ 570.x) or missing Vulkan instance extensions from GLFW.
 
 **Image is very dark or very bright**  
-Adjust the **Env Exposure** slider in the Raytracer panel. For scenes with emissive materials adjust the emissive scale on the material.
+Adjust the **Env Exposure** slider in the Environment panel. For scenes with emissive materials adjust the emissive scale on the material.
 
 **Scene with glass converges slowly despite HDRI**  
 HDRI NEE fires only on diffuse bounces. Paths that escape through glass (transmission) follow the BSDF and are unaffected by NEE — this is correct behaviour. Increase `MAX_BOUNCES` in `device_programs.cu` if light needs more bounces to exit the glass.
