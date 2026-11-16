@@ -1686,6 +1686,50 @@ bool sampleSceneTex(int index, const float2* uvs, const uint3& tri,
     return true;
 }
 
+// ─── Material → path vertex ──────────────────────────────────────────────────
+// Single place where MaterialData is copied into the PathVertex payload, shared
+// by every closest-hit program.  A new material field needs adding here only.
+// Colours are linearised; textured lookups (albedo / roughness / emission) are
+// layered on top by the caller (see __closesthit__radiance).
+
+static __forceinline__ __device__
+void applyMaterial(PathVertex* vtx, const MaterialData& mat)
+{
+    vtx->albedo    = srgbToLinear3(mat.albedo);
+    vtx->roughness = mat.roughness;
+    vtx->metallic  = mat.metallic;
+    vtx->emission  = srgbToLinear3(mat.emission) * mat.emissionScale;
+
+    vtx->transmission         = mat.transmission;
+    vtx->ior                  = mat.ior;
+    vtx->absorptionDistance   = fmaxf(mat.absorptionDistance, 1e-4f);
+    vtx->scatteringCoeff      = make_float3(fmaxf(mat.scatteringCoeff.x, 0.0f),
+                                            fmaxf(mat.scatteringCoeff.y, 0.0f),
+                                            fmaxf(mat.scatteringCoeff.z, 0.0f));
+    vtx->scatteringAnisotropy = mat.scatteringAnisotropy;
+
+    vtx->clearcoat          = mat.clearcoat;
+    vtx->clearcoatRoughness = mat.clearcoatRoughness;
+    vtx->clearcoatDarkening = mat.clearcoatDarkening;
+    vtx->clearcoatColor     = srgbToLinear3(mat.clearcoatColor);
+    vtx->clearcoatIor       = mat.clearcoatIor;
+    vtx->clearcoatKr        = mat.clearcoatKr;
+
+    vtx->thinWalled    = mat.thinWalled;
+    vtx->shadowCatcher = mat.shadowCatcher;
+}
+
+// Fallback for geometry without a valid material: the MaterialData member
+// initialisers (scene_data.h) are the single source of defaults, with a neutral
+// grey base colour.
+static __forceinline__ __device__
+void applyDefaultMaterial(PathVertex* vtx)
+{
+    const MaterialData def = MaterialData();
+    applyMaterial(vtx, def);
+    vtx->albedo = make_float3(0.8f, 0.8f, 0.8f);  // linear
+}
+
 // ─── Closest-hit ─────────────────────────────────────────────────────────────
 
 extern "C" __global__ void __closesthit__radiance()
@@ -1715,10 +1759,11 @@ extern "C" __global__ void __closesthit__radiance()
     if (optixLaunchParams.materials && mesh.materialIndex >= 0)
     {
         const MaterialData& mat = optixLaunchParams.materials[mesh.materialIndex];
-        // Albedo — base colour × texture tint (glTF: baseColorFactor × baseColorTexture).
-        // Both the colour factor and the texture sample are sRGB-encoded, so each is
-        // linearised independently before the multiplication.
-        vtx->albedo = srgbToLinear3(mat.albedo);
+        applyMaterial(vtx, mat);
+
+        // Texture layers — each sample is sRGB-encoded (except roughness), so it
+        // is linearised independently and multiplied onto the already-linear
+        // factor that applyMaterial wrote (glTF: factor × texture).
         float4 texSample;
         if (sampleSceneTex(mat.albedoTexture, mesh.uvs, tri, w0, bc, mat.uvTransform, texSample))
         {
@@ -1730,63 +1775,24 @@ extern "C" __global__ void __closesthit__radiance()
         }
 
         // Roughness — red channel × roughness factor
-        vtx->roughness = mat.roughness;
         if (sampleSceneTex(mat.roughnessTexture, mesh.uvs, tri, w0, bc, mat.uvTransform, texSample))
         {
             vtx->roughness *= texSample.x;
         }
 
-        vtx->metallic = mat.metallic;
-
-        // Emission — colour factor × texture (both sRGB-encoded, linearised before
-        // multiply, matching the albedo path).
+        // Emission — linear colour × scale × texture (multiplication commutes)
+        if (sampleSceneTex(mat.emissionTexture, mesh.uvs, tri, w0, bc, mat.uvTransform, texSample))
         {
-            float3 emLinear = srgbToLinear3(mat.emission);
-            float4 emSample;
-            if (sampleSceneTex(mat.emissionTexture, mesh.uvs, tri, w0, bc,
-                               mat.uvTransform, emSample))
-            {
-                const float3 emTexLinear = srgbToLinear3(
-                    make_float3(emSample.x, emSample.y, emSample.z));
-                emLinear = make_float3(emLinear.x * emTexLinear.x,
-                                      emLinear.y * emTexLinear.y,
-                                      emLinear.z * emTexLinear.z);
-            }
-            vtx->emission = emLinear * mat.emissionScale;
+            const float3 emTexLinear = srgbToLinear3(
+                make_float3(texSample.x, texSample.y, texSample.z));
+            vtx->emission = make_float3(vtx->emission.x * emTexLinear.x,
+                                        vtx->emission.y * emTexLinear.y,
+                                        vtx->emission.z * emTexLinear.z);
         }
-        vtx->transmission       = mat.transmission;
-        vtx->ior                = mat.ior;
-        vtx->absorptionDistance   = fmaxf(mat.absorptionDistance, 1e-4f);
-        vtx->scatteringCoeff      = make_float3(fmaxf(mat.scatteringCoeff.x, 0.0f),
-                                               fmaxf(mat.scatteringCoeff.y, 0.0f),
-                                               fmaxf(mat.scatteringCoeff.z, 0.0f));
-        vtx->scatteringAnisotropy = mat.scatteringAnisotropy;
-        vtx->clearcoat            = mat.clearcoat;
-        vtx->clearcoatRoughness = mat.clearcoatRoughness;
-        vtx->clearcoatDarkening = mat.clearcoatDarkening;
-        vtx->clearcoatColor     = srgbToLinear3(mat.clearcoatColor);
-        vtx->clearcoatIor       = mat.clearcoatIor;
-        vtx->clearcoatKr        = mat.clearcoatKr;
-        vtx->thinWalled         = mat.thinWalled;
-        vtx->shadowCatcher      = mat.shadowCatcher;
     }
     else
     {
-        vtx->albedo             = make_float3(0.8f, 0.8f, 0.8f);
-        vtx->roughness          = 0.5f;
-        vtx->metallic           = 0.0f;
-        vtx->emission           = make_float3(0.0f, 0.0f, 0.0f);
-        vtx->transmission       = 0.0f;
-        vtx->ior                = 1.5f;
-        vtx->absorptionDistance = 1.0f;
-        vtx->clearcoat          = 0.0f;
-        vtx->clearcoatRoughness = 0.0f;
-        vtx->clearcoatDarkening = 1.0f;
-        vtx->clearcoatColor     = make_float3(1.0f, 1.0f, 1.0f);
-        vtx->clearcoatIor       = 1.5f;
-        vtx->clearcoatKr        = 0.5963f;
-        vtx->thinWalled         = 0;
-        vtx->shadowCatcher      = 0;
+        applyDefaultMaterial(vtx);
     }
 
     vtx->hit        = 1;
@@ -2013,47 +2019,11 @@ extern "C" __global__ void __closesthit__implicit()
 
     if (optixLaunchParams.materials && shape.materialIndex >= 0)
     {
-        const MaterialData& mat = optixLaunchParams.materials[shape.materialIndex];
-
-        vtx->albedo    = srgbToLinear3(mat.albedo);
-        vtx->roughness = mat.roughness;
-        vtx->metallic  = mat.metallic;
-
-        vtx->emission = srgbToLinear3(mat.emission) * mat.emissionScale;
-
-        vtx->transmission         = mat.transmission;
-        vtx->ior                  = mat.ior;
-        vtx->absorptionDistance   = fmaxf(mat.absorptionDistance, 1e-4f);
-        vtx->scatteringCoeff      = make_float3(fmaxf(mat.scatteringCoeff.x, 0.0f),
-                                                fmaxf(mat.scatteringCoeff.y, 0.0f),
-                                                fmaxf(mat.scatteringCoeff.z, 0.0f));
-        vtx->scatteringAnisotropy = mat.scatteringAnisotropy;
-        vtx->clearcoat            = mat.clearcoat;
-        vtx->clearcoatRoughness   = mat.clearcoatRoughness;
-        vtx->clearcoatDarkening   = mat.clearcoatDarkening;
-        vtx->clearcoatColor       = srgbToLinear3(mat.clearcoatColor);
-        vtx->clearcoatIor         = mat.clearcoatIor;
-        vtx->clearcoatKr          = mat.clearcoatKr;
-        vtx->thinWalled           = mat.thinWalled;
-        vtx->shadowCatcher        = mat.shadowCatcher;
+        applyMaterial(vtx, optixLaunchParams.materials[shape.materialIndex]);
     }
     else
     {
-        vtx->albedo             = make_float3(0.8f, 0.8f, 0.8f);
-        vtx->roughness          = 0.5f;
-        vtx->metallic           = 0.0f;
-        vtx->emission           = make_float3(0.0f, 0.0f, 0.0f);
-        vtx->transmission       = 0.0f;
-        vtx->ior                = 1.5f;
-        vtx->absorptionDistance = 1.0f;
-        vtx->clearcoat          = 0.0f;
-        vtx->clearcoatRoughness = 0.0f;
-        vtx->clearcoatDarkening = 1.0f;
-        vtx->clearcoatColor     = make_float3(1.0f, 1.0f, 1.0f);
-        vtx->clearcoatIor       = 1.5f;
-        vtx->clearcoatKr        = 0.5963f;
-        vtx->thinWalled         = 0;
-        vtx->shadowCatcher      = 0;
+        applyDefaultMaterial(vtx);
     }
 
     vtx->hit        = 1;
