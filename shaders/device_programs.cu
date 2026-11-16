@@ -72,6 +72,10 @@ struct PathVertex
     float  scatteringAnisotropy; // Henyey-Greenstein g [-1, +1]
     float  clearcoat;            // clearcoat layer intensity [0, 1]
     float  clearcoatRoughness;   // clearcoat layer roughness [0, 1]
+    float  clearcoatDarkening;   // OpenPBR coat_darkening [0, 1]
+    float3 clearcoatColor;       // coat absorption tint (linear)
+    float  clearcoatIor;         // coat IOR
+    float  clearcoatKr;          // coat internal diffuse reflectance (host-derived)
     int    thinWalled;           // 1 = zero-thickness surface; pass through without refraction
     int    shadowCatcher;        // 1 = invisible to camera/GI rays; shows background + shadow only
     float        t;          // ray travel distance to this hit (Beer-Lambert)
@@ -1055,9 +1059,11 @@ extern "C" __global__ void __raygen__renderFrame()
         const float3 Nf  = (devDot(vtx.N, -rayDir) >= 0.0f) ? vtx.N : -vtx.N;
         const float  cosV = devDot(Nf, -rayDir);  // shared by clearcoat + base Fresnel
 
-        // ── Clearcoat Fresnel (fixed IOR 1.5 → F0 = 0.04) ────────────────────
+        // ── Clearcoat Fresnel (Schlick, F0 from the coat IOR; 1.5 → 0.04) ────
         const float  cc_alpha = fmaxf(vtx.clearcoatRoughness * vtx.clearcoatRoughness, 1e-3f);
-        const float3 cc_F     = devFresnel(cosV, make_float3(0.04f, 0.04f, 0.04f));
+        const float  cc_f0    = ((vtx.clearcoatIor - 1.0f) / (vtx.clearcoatIor + 1.0f))
+                              * ((vtx.clearcoatIor - 1.0f) / (vtx.clearcoatIor + 1.0f));
+        const float3 cc_F     = devFresnel(cosV, make_float3(cc_f0, cc_f0, cc_f0));
         const float  p_coat   = vtx.clearcoat * devLuminance(cc_F);
 
         if (p_coat > 0.0f && rnd(seed) < p_coat)
@@ -1077,7 +1083,7 @@ extern "C" __global__ void __raygen__renderFrame()
                 break;
             }
 
-            // cc_F is achromatic (F0 = 0.04 is grey → Schlick stays grey), so
+            // cc_F is achromatic (scalar F0 from the coat IOR → Schlick stays grey), so
             // cc_F * clearcoat / p_coat = cc_F * clearcoat / (clearcoat * luminance(cc_F)) = 1.
             // The probability selection already carries the energy split; only G1 remains.
             const float cosNLc  = fmaxf(1e-4f, devDot(Nf, Lc));
@@ -1090,8 +1096,67 @@ extern "C" __global__ void __raygen__renderFrame()
         else
         {
             // ── Base material ─────────────────────────────────────────────────
-            // (1 - cc_F * clearcoat) / (1 - p_coat) = 1 for achromatic cc_F,
-            // so no throughput change is needed here either.
+            // The coat's Fresnel transmission is already carried by branch
+            // selection: (1 - C·F) / (1 - p_coat) = 1 for achromatic cc_F.
+            //
+            // OpenPBR coat darkening (arXiv 2512.23696 §5.1, coat_darkening = 1):
+            // light transmitted through the coat and diffusely reflected by the
+            // base is partly trapped by total internal reflection at the coat
+            // interface and re-bounces off the base, so saturated bases darken.
+            //   Δ = (1 − K) / (1 − E_b·K·CC)        CC = coat_color
+            //   K = lerp(K_s, K_r, r_b)             K_r = 1 − (1 − E_F)/η²
+            // Spec weight of the base under the coat:
+            //   (1 − C) + C·Δ·T_coat·(1 − F)
+            // with T_coat = CC^(1/μ) the coat absorption tint along the refracted
+            // path (entry and exit cosines approximated by the view's, since the
+            // outgoing direction is not sampled yet).  The branch is chosen with
+            // probability (1 − C·F), so scale by the ratio.  K_r is precomputed
+            // on the host from the coat IOR (coat_math.h).
+            if (vtx.clearcoat > 0.0f)
+            {
+                const float kCoatIor = vtx.clearcoatIor;
+                const float kKr      = vtx.clearcoatKr;
+
+                // Base normal-incidence dielectric reflectance under the coat
+                const float eta_a = medIor[medTop] / vtx.ior;
+                const float eta_c = kCoatIor / vtx.ior;
+                const float eta_s = eta_a + (eta_c - eta_a) * vtx.clearcoat;
+                const float F0    = devFresnelDielectric(1.0f, eta_s);
+
+                // Rough/Lambertian bases scatter light isotropically (K_r); smooth
+                // specular bases reflect at the coat's directional Fresnel (K_s).
+                const float Fs = devClamp01(F0);
+                const float rd = 1.0f + (vtx.roughness - 1.0f) * Fs;
+                const float rb = rd + (vtx.roughness - rd) * vtx.metallic;
+                const float K  = cc_F.x + (kKr - cc_F.x) * rb;
+
+                // Whole-base albedo estimate E_b: diffuse colour, (1 − F0) for the
+                // transmissive part, plain albedo for metals.
+                const float3 E_diel = devMix(vtx.albedo,
+                                             make_float3(1.0f - F0, 1.0f - F0, 1.0f - F0),
+                                             vtx.transmission);
+                const float3 E_b    = devMix(E_diel, vtx.albedo, vtx.metallic);
+
+                const float3 CC = vtx.clearcoatColor;
+                const float3 delta = make_float3(
+                    fmaxf(1.0f - K, 0.0f) / fmaxf(1.0f - E_b.x * K * CC.x, 1e-4f),
+                    fmaxf(1.0f - K, 0.0f) / fmaxf(1.0f - E_b.y * K * CC.y, 1e-4f),
+                    fmaxf(1.0f - K, 0.0f) / fmaxf(1.0f - E_b.z * K * CC.z, 1e-4f));
+
+                // Absorption tint along the refracted path: CC^(1/μ).
+                const float mu  = sqrtf(fmaxf(1.0f - (1.0f - cosV * cosV) / (kCoatIor * kCoatIor), 1e-4f));
+                const float tintExp = 1.0f / mu;
+                const float3 tint = make_float3(powf(CC.x, tintExp), powf(CC.y, tintExp), powf(CC.z, tintExp));
+
+                // coat_darkening blends the physical darkening in: lerp(1, Δ, δ).
+                const float dk    = vtx.clearcoatDarkening;
+                const float C     = vtx.clearcoat;
+                const float F     = cc_F.x;
+                const float pBase = fmaxf(1.0f - C * F, 1e-4f);
+                throughput.x *= ((1.0f - C) + C * (1.0f + (delta.x - 1.0f) * dk) * tint.x * (1.0f - F)) / pBase;
+                throughput.y *= ((1.0f - C) + C * (1.0f + (delta.y - 1.0f) * dk) * tint.y * (1.0f - F)) / pBase;
+                throughput.z *= ((1.0f - C) + C * (1.0f + (delta.z - 1.0f) * dk) * tint.z * (1.0f - F)) / pBase;
+            }
 
             // Base Fresnel — exact dielectric (handles IOR=1 correctly) blended with metal Schlick.
             // Schlick with F0=0 gives spurious (1−cosV)^5 at grazing for IOR=1; exact gives 0.
@@ -1698,6 +1763,10 @@ extern "C" __global__ void __closesthit__radiance()
         vtx->scatteringAnisotropy = mat.scatteringAnisotropy;
         vtx->clearcoat            = mat.clearcoat;
         vtx->clearcoatRoughness = mat.clearcoatRoughness;
+        vtx->clearcoatDarkening = mat.clearcoatDarkening;
+        vtx->clearcoatColor     = srgbToLinear3(mat.clearcoatColor);
+        vtx->clearcoatIor       = mat.clearcoatIor;
+        vtx->clearcoatKr        = mat.clearcoatKr;
         vtx->thinWalled         = mat.thinWalled;
         vtx->shadowCatcher      = mat.shadowCatcher;
     }
@@ -1712,6 +1781,10 @@ extern "C" __global__ void __closesthit__radiance()
         vtx->absorptionDistance = 1.0f;
         vtx->clearcoat          = 0.0f;
         vtx->clearcoatRoughness = 0.0f;
+        vtx->clearcoatDarkening = 1.0f;
+        vtx->clearcoatColor     = make_float3(1.0f, 1.0f, 1.0f);
+        vtx->clearcoatIor       = 1.5f;
+        vtx->clearcoatKr        = 0.5963f;
         vtx->thinWalled         = 0;
         vtx->shadowCatcher      = 0;
     }
@@ -1957,6 +2030,10 @@ extern "C" __global__ void __closesthit__implicit()
         vtx->scatteringAnisotropy = mat.scatteringAnisotropy;
         vtx->clearcoat            = mat.clearcoat;
         vtx->clearcoatRoughness   = mat.clearcoatRoughness;
+        vtx->clearcoatDarkening   = mat.clearcoatDarkening;
+        vtx->clearcoatColor       = srgbToLinear3(mat.clearcoatColor);
+        vtx->clearcoatIor         = mat.clearcoatIor;
+        vtx->clearcoatKr          = mat.clearcoatKr;
         vtx->thinWalled           = mat.thinWalled;
         vtx->shadowCatcher        = mat.shadowCatcher;
     }
@@ -1971,6 +2048,10 @@ extern "C" __global__ void __closesthit__implicit()
         vtx->absorptionDistance = 1.0f;
         vtx->clearcoat          = 0.0f;
         vtx->clearcoatRoughness = 0.0f;
+        vtx->clearcoatDarkening = 1.0f;
+        vtx->clearcoatColor     = make_float3(1.0f, 1.0f, 1.0f);
+        vtx->clearcoatIor       = 1.5f;
+        vtx->clearcoatKr        = 0.5963f;
         vtx->thinWalled         = 0;
         vtx->shadowCatcher      = 0;
     }

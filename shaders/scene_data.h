@@ -48,6 +48,11 @@ struct MaterialData
 
     float  clearcoat          = 0.0f;  // KHR_materials_clearcoat intensity [0, 1]
     float  clearcoatRoughness = 0.0f;  // clearcoat layer roughness [0, 1]
+    float  clearcoatDarkening = 1.0f;  // OpenPBR coat_darkening [0, 1]: 1 = physical base darkening, 0 = none
+    float3 clearcoatColor     = { 1.0f, 1.0f, 1.0f };  // OpenPBR coat_color: absorption tint, sRGB-encoded like albedo
+    float  clearcoatIor       = 1.5f;  // OpenPBR coat_ior [1, 3]
+    float  clearcoatKr        = 0.5963f;  // internal diffuse reflectance of the coat interface for
+                                          // clearcoatIor — derived on the host (coat_math.h), not user-edited
 
     int    thinWalled = 0;  // 1 = invisible to NEE shadow rays (pass-through)
 

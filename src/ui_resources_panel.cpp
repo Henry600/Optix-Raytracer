@@ -143,108 +143,143 @@ void Application::drawResourcesPanel()
                         {
                             anyMatChanged = true;
                         }
-                        if (ImGui::ColorEdit3("Emission", &mats[i].emission.x, ImGuiColorEditFlags_Float))
+                        if (ImGui::TreeNode("Emission"))
                         {
-                            anyMatChanged = true;
-                        }
-                        ImGui::SameLine();
-                        {
-                            const auto& textures = m_scene->textures();
-                            const int   cur      = mats[i].emissionTexture;
-                            const std::string preview = (cur < 0 || cur >= (int)textures.size())
-                                ? "None"
-                                : (textures[cur].name.empty()
-                                    ? "Texture " + std::to_string(cur)
-                                    : textures[cur].name);
-                            ImGui::PushItemWidth(-1.0f);
-                            if (ImGui::BeginCombo("##emissionTex", preview.c_str()))
+                            if (ImGui::ColorEdit3("Emission", &mats[i].emission.x, ImGuiColorEditFlags_Float))
                             {
-                                if (ImGui::Selectable("None", cur < 0))
-                                {
-                                    mats[i].emissionTexture = -1;
-                                    anyMatChanged = true;
-                                }
-                                for (int t = 0; t < (int)textures.size(); ++t)
-                                {
-                                    const std::string label = textures[t].name.empty()
-                                        ? ("Texture " + std::to_string(t))
-                                        : textures[t].name;
-                                    if (ImGui::Selectable(label.c_str(), cur == t))
-                                    {
-                                        mats[i].emissionTexture = t;
-                                        anyMatChanged = true;
-                                    }
-                                }
-                                ImGui::EndCombo();
-                            }
-                            ImGui::PopItemWidth();
-                        }
-                        if (ImGui::DragFloat("Emission Scale", &mats[i].emissionScale, 0.1f, 0.0f, 1000.0f, "%.2f"))
-                        {
-                            anyMatChanged = true;
-                        }
-                        if (ImGui::SliderFloat("Transmission", &mats[i].transmission, 0.0f, 1.0f, "%.3f"))
-                        {
-                            anyMatChanged = true;
-                        }
-                        if (ImGui::SliderFloat("IOR",          &mats[i].ior,          1.0f, 3.0f, "%.3f"))
-                        {
-                            anyMatChanged = true;
-                        }
-                        if (ImGui::DragFloat("Absorption Dist.", &mats[i].absorptionDistance, 0.002f, 0.0001f, 1000.0f, "%.4f"))
-                        {
-                            anyMatChanged = true;
-                        }
-                        {
-                            float3& sc = mats[i].scatteringCoeff;
-
-                            // Scale slider — adjusts all channels proportionally,
-                            // preserving the R:G:B ratios set by the Rayleigh button.
-                            float scale = fmaxf(fmaxf(sc.x, sc.y), sc.z);
-                            if (ImGui::DragFloat("Scatter Scale", &scale, 0.01f, 0.0f, 50.0f, "%.3f"))
-                            {
-                                scale = fmaxf(scale, 0.0f);
-                                const float oldMax = fmaxf(fmaxf(sc.x, sc.y), sc.z);
-                                if (oldMax > 1e-6f)
-                                {
-                                    const float ratio = scale / oldMax;
-                                    sc.x *= ratio;
-                                    sc.y *= ratio;
-                                    sc.z *= ratio;
-                                }
-                                else
-                                {
-                                    sc = make_float3(scale, scale, scale);
-                                }
                                 anyMatChanged = true;
                             }
                             ImGui::SameLine();
-                            if (ImGui::Button("Rayleigh##scat"))
                             {
-                                // λ^-4 ratios: R(680nm):G(550nm):B(440nm) → 0.174 : 0.405 : 1.0
-                                const float base = scale > 0.0f ? scale : 1.0f;
-                                sc = make_float3(0.174f * base, 0.405f * base, 1.0f * base);
+                                const auto& textures = m_scene->textures();
+                                const int   cur      = mats[i].emissionTexture;
+                                const std::string preview = (cur < 0 || cur >= (int)textures.size())
+                                    ? "None"
+                                    : (textures[cur].name.empty()
+                                        ? "Texture " + std::to_string(cur)
+                                        : textures[cur].name);
+                                ImGui::PushItemWidth(-1.0f);
+                                if (ImGui::BeginCombo("##emissionTex", preview.c_str()))
+                                {
+                                    if (ImGui::Selectable("None", cur < 0))
+                                    {
+                                        mats[i].emissionTexture = -1;
+                                        anyMatChanged = true;
+                                    }
+                                    for (int t = 0; t < (int)textures.size(); ++t)
+                                    {
+                                        const std::string label = textures[t].name.empty()
+                                            ? ("Texture " + std::to_string(t))
+                                            : textures[t].name;
+                                        if (ImGui::Selectable(label.c_str(), cur == t))
+                                        {
+                                            mats[i].emissionTexture = t;
+                                            anyMatChanged = true;
+                                        }
+                                    }
+                                    ImGui::EndCombo();
+                                }
+                                ImGui::PopItemWidth();
+                            }
+                            if (ImGui::DragFloat("Emission Scale", &mats[i].emissionScale, 0.1f, 0.0f, 1000.0f, "%.2f"))
+                            {
                                 anyMatChanged = true;
                             }
-                            if (ImGui::DragFloat3("Scatter Coeff.", &sc.x, 0.01f, 0.0f, 50.0f, "%.3f"))
+                            ImGui::TreePop();
+                        }
+                        if (ImGui::TreeNode("Transmission"))
+                        {
+                            if (ImGui::SliderFloat("Transmission", &mats[i].transmission, 0.0f, 1.0f, "%.3f"))
                             {
-                                sc.x = fmaxf(sc.x, 0.0f);
-                                sc.y = fmaxf(sc.y, 0.0f);
-                                sc.z = fmaxf(sc.z, 0.0f);
                                 anyMatChanged = true;
                             }
+                            if (ImGui::SliderFloat("IOR",          &mats[i].ior,          1.0f, 3.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::DragFloat("Absorption Dist.", &mats[i].absorptionDistance, 0.002f, 0.0001f, 1000.0f, "%.4f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            {
+                                float3& sc = mats[i].scatteringCoeff;
+
+                                // Scale slider — adjusts all channels proportionally,
+                                // preserving the R:G:B ratios set by the Rayleigh button.
+                                float scale = fmaxf(fmaxf(sc.x, sc.y), sc.z);
+                                if (ImGui::DragFloat("Scatter Scale", &scale, 0.01f, 0.0f, 50.0f, "%.3f"))
+                                {
+                                    scale = fmaxf(scale, 0.0f);
+                                    const float oldMax = fmaxf(fmaxf(sc.x, sc.y), sc.z);
+                                    if (oldMax > 1e-6f)
+                                    {
+                                        const float ratio = scale / oldMax;
+                                        sc.x *= ratio;
+                                        sc.y *= ratio;
+                                        sc.z *= ratio;
+                                    }
+                                    else
+                                    {
+                                        sc = make_float3(scale, scale, scale);
+                                    }
+                                    anyMatChanged = true;
+                                }
+                                ImGui::SameLine();
+                                if (ImGui::Button("Rayleigh##scat"))
+                                {
+                                    // λ^-4 ratios: R(680nm):G(550nm):B(440nm) → 0.174 : 0.405 : 1.0
+                                    const float base = scale > 0.0f ? scale : 1.0f;
+                                    sc = make_float3(0.174f * base, 0.405f * base, 1.0f * base);
+                                    anyMatChanged = true;
+                                }
+                                if (ImGui::DragFloat3("Scatter Coeff.", &sc.x, 0.01f, 0.0f, 50.0f, "%.3f"))
+                                {
+                                    sc.x = fmaxf(sc.x, 0.0f);
+                                    sc.y = fmaxf(sc.y, 0.0f);
+                                    sc.z = fmaxf(sc.z, 0.0f);
+                                    anyMatChanged = true;
+                                }
+                            }
+                            if (ImGui::SliderFloat("Scatter Aniso.", &mats[i].scatteringAnisotropy, -1.0f, 1.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            ImGui::TreePop();
                         }
-                        if (ImGui::SliderFloat("Scatter Aniso.", &mats[i].scatteringAnisotropy, -1.0f, 1.0f, "%.3f"))
+                        if (ImGui::TreeNode("Coat"))
                         {
-                            anyMatChanged = true;
-                        }
-                        if (ImGui::SliderFloat("Clearcoat",      &mats[i].clearcoat,          0.0f, 1.0f, "%.3f"))
-                        {
-                            anyMatChanged = true;
-                        }
-                        if (ImGui::SliderFloat("Coat Roughness", &mats[i].clearcoatRoughness,  0.0f, 1.0f, "%.3f"))
-                        {
-                            anyMatChanged = true;
+                            if (ImGui::SliderFloat("Weight",    &mats[i].clearcoat,           0.0f, 1.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::ColorEdit3("Color", &mats[i].clearcoatColor.x, ImGuiColorEditFlags_Float))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::IsItemHovered())
+                            {
+                                ImGui::SetTooltip("Coat absorption tint (OpenPBR coat_color).\nWhite = clear.");
+                            }
+                            if (ImGui::SliderFloat("Roughness", &mats[i].clearcoatRoughness,  0.0f, 1.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::SliderFloat("IOR",       &mats[i].clearcoatIor,        1.0f, 3.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::SliderFloat("Darkening", &mats[i].clearcoatDarkening,  0.0f, 1.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::IsItemHovered())
+                            {
+                                ImGui::SetTooltip(
+                                    "OpenPBR coat darkening: light trapped by internal\n"
+                                    "reflection in the coat darkens the base layer.\n"
+                                    "1 = physical, 0 = off.");
+                            }
+                            ImGui::TreePop();
                         }
 
                         {

@@ -4,6 +4,7 @@
 // translation unit. This file is that unit — do not include it elsewhere.
 
 #include "application.h"
+#include "coat_math.h"
 #include "implicit_node.h"
 #include "matrix4x4.h"
 
@@ -331,7 +332,15 @@ void Application::uploadMaterials()
     {
         m_materialsBuffer.alloc(matBytes);
     }
-    m_materialsBuffer.upload(mats.data(), matBytes);
+
+    // Derived per-material coat data (internal reflectance depends only on the
+    // coat IOR) is filled on an upload copy so the UI-edited values stay pristine.
+    std::vector<MaterialData> upload = mats;
+    for (MaterialData& m : upload)
+    {
+        m.clearcoatKr = coatInternalReflectance(m.clearcoatIor);
+    }
+    m_materialsBuffer.upload(upload.data(), matBytes);
 }
 
 void Application::uploadEmissiveLights()
