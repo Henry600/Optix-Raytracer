@@ -1,4 +1,4 @@
-# Compile device_programs.cu to PTX for OptiX JIT compilation at runtime.
+# Compile device_programs.cu (which includes the headers under device/) to a single PTX module for OptiX JIT compilation at runtime.
 # CUDA_PTX_COMPILATION ON  → outputs .ptx instead of .obj
 # 75-virtual              → PTX only, no embedded cubin (required for OptiX)
 # CUDA_SEPARABLE_COMPILATION OFF → PTX programs are self-contained entry points
@@ -8,9 +8,45 @@ add_library(device_programs OBJECT
     device_math.h
     launch_params.h
     scene_data.h
+    device/dev_common.h
+    device/path_payload.h
+    device/rng_sampling.h
+    device/pbr.h
+    device/environment.h
+    device/emissive_lights.h
+    device/display.h
+    device/eon_diffuse.h
+    device/splat_gather.h
+    device/raygen_render.h
+    device/miss_shadow_programs.h
+    device/material.h
+    device/hit_mesh.h
+    device/implicit_shapes.h
+    device/hit_implicit.h
+    device/splat_programs.h
+    device/pick_programs.h
 )
 
 source_group("Header Files" FILES device_math.h launch_params.h scene_data.h)
+source_group("Header Files\\device" FILES
+    device/dev_common.h
+    device/path_payload.h
+    device/rng_sampling.h
+    device/pbr.h
+    device/environment.h
+    device/emissive_lights.h
+    device/display.h
+    device/eon_diffuse.h
+    device/splat_gather.h
+    device/raygen_render.h
+    device/miss_shadow_programs.h
+    device/material.h
+    device/hit_mesh.h
+    device/implicit_shapes.h
+    device/hit_implicit.h
+    device/splat_programs.h
+    device/pick_programs.h
+)
 source_group("Source Files" FILES device_programs.cu)
 
 set_property(TARGET device_programs PROPERTY CUDA_PTX_COMPILATION ON)
