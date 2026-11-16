@@ -10,21 +10,25 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 
 ### Rendering
 - **Monte Carlo path tracing** with up to 16 bounces and per-pixel progressive accumulation
-- **PBR materials** (GGX-VNDF microfacet BRDF) — albedo, roughness, metallic, clearcoat, clearcoat roughness, emission, transmission, IOR, and absorption distance; sRGB albedo textures and colour values are linearised before lighting calculations
+- **Layered PBR materials** (GGX-VNDF microfacet BRDF), organised after the OpenPBR model in the material editor: **Base** (colour + texture, metalness, diffuse roughness), **Specular** (roughness + texture, IOR), **Emission**, **Transmission** (weight, colour, depth, scatter, scatter anisotropy) and **Coat** (weight, colour, roughness, IOR, darkening); sRGB colours and textures are linearised before lighting — colour values once at material upload, so the shaders run no per-hit `pow()`
+- **EON rough diffuse** — the Base group's *Diffuse Roughness* uses OpenPBR's energy-preserving Oren-Nayar (Fujii's Oren-Nayar plus a multiple-scattering compensation lobe), applied to the diffuse bounce and both NEE strategies; 0 is exactly Lambertian
+- **Clear coat with OpenPBR coat darkening** — a dielectric coat layer (adjustable IOR, tint colour and roughness) over the base; light trapped by internal reflection in the coat darkens saturated bases (`Δ = (1 − K) / (1 − E_b·K·coat_color)`, blended by the *Darkening* slider); the coat's internal reflectance is integrated numerically on the host from the coat IOR
 - **Probabilistic lobe selection** — clearcoat → specular → diffuse/refraction, each weighted by Fresnel probability for energy conservation; lobe selection uses the exact dielectric Fresnel equation (not Schlick) so IOR = 1 materials are correctly invisible at all angles
-- **Stochastic refraction** — rough dielectric transmission with Snell's law and GGX microfacet normal sampling; Beer-Lambert volumetric absorption for coloured glass (absorption accumulates over distance, not at the surface); **nested dielectrics** — a per-path medium stack tracks the enclosing material IOR and absorption so overlapping or nested glass objects refract and attenuate correctly; **thin-walled glass** mode skips volume absorption and tints NEE shadow rays with the glass colour for correct single-surface light filtering
+- **Stochastic refraction** — rough dielectric transmission with Snell's law and GGX microfacet normal sampling; Beer-Lambert volumetric absorption for coloured glass (absorption accumulates over distance, not at the surface); **nested dielectrics** — a per-path medium stack tracks the enclosing material IOR and absorption so overlapping or nested glass objects refract and attenuate correctly; **thin-walled glass** mode skips volume absorption and tints bounce and NEE shadow rays with the transmission colour for correct single-surface light filtering
 - **Environment lighting** — three independently selectable sky modes: **Constant** colour, **Procedural** horizon-to-zenith gradient, or **HDRI**; equirectangular EXR maps (`.exr`, all codecs: NONE / RLE / ZIP / PIZ / PXR24 / B44 / DWAA / DWAB) or Radiance HDR maps (`.hdr`) drive HDRI mode; a shared rotation, exposure (EV), and colour multiplier apply across all three modes; NaN and inf pixels are clamped at load time (NaN → 0, inf → 65504) so over-bright sources never corrupt thumbnails or the CDF
 - **HDRI importance sampling** — 2D luminance CDF built at load time; NEE fires shadow rays toward bright env-map regions at every diffuse and specular (GGX) bounce; MIS power heuristic with the GGX VNDF PDF prevents double-counting on specular escape paths
 - **Shadow-catcher material** — a per-material toggle that renders a surface invisible to camera/GI rays (showing the sky/background through it) while still darkening under shadows cast by other geometry; the shadow-ray direction is importance-sampled toward the env map so occluders in front of a bright sun read as a hard directional shadow rather than flat ambient occlusion; useful for compositing rendered objects onto an HDRI or background plate
 - **Emissive mesh / implicit NEE with MIS** — direct illumination from emissive surfaces is sampled at every diffuse and specular bounce; area-to-solid-angle Jacobian handles non-uniform scale correctly; MIS power heuristic combines emissive NEE, HDRI NEE, and BSDF strategies so emissive geometry integrates with the same noise-reducing efficiency as the environment map
+- **Gaussian splat rendering** — imported `.sog` splats are ray-traced as volumes alongside meshes (3DGRT-style): a dedicated gather trace collects per-gaussian responses along each ray into a depth-sorted k-buffer (batched re-traces on overflow), which is composited front-to-back into the path's radiance and transmittance — splats occlude the environment, appear in reflections and refractions, and light scene geometry through GI bounces; full view-dependent colour from spherical harmonics (bands 0–3); shadow rays currently pass through splats
 - **Thin-lens depth of field** — focal length, sensor size, f-stop, focus distance, and adjustable bokeh edge bias
 - **scRGB FP16 swapchain with automatic SDR fallback** — on Windows with HDR enabled, presents through `VK_FORMAT_R16G16B16A16_SFLOAT` + `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`; on displays without HDR, automatically falls back to `VK_FORMAT_B8G8R8A8_UNORM` + `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` with Reinhard tone-mapping and gamma encoding; no configuration required
 - **HDR output toggle** — available on HDR displays (scRGB swapchain active); when off, Reinhard tone-maps accumulated radiance into SDR range; when on, radiance passes through unclamped so highlights can exceed paper white; automatically disabled with a *(no HDR display)* label on SDR displays
 - **OptiX AI denoiser** — normal + albedo guide layers, configurable denoise interval, keeps the last denoised frame while accumulating
 
 ### Scene
-- **glTF 2.0 / GLB loading** — meshes, PBR materials (including `KHR_materials_transmission`, `KHR_materials_ior`, `KHR_materials_clearcoat`, `KHR_materials_emissive_strength`), base-colour textures, cameras, scene hierarchy; `baseColorFactor` and `emissiveFactor` are converted from the linear space mandated by the glTF spec to sRGB at import time, matching the internal `MaterialData` convention
-- **Scene graph** — full glTF node hierarchy preserved as a `Node3D` tree (`MeshNode`, `CameraNode`, `GroupNode`, `ImplicitNode`)
+- **glTF 2.0 / GLB loading** — meshes, PBR materials (including `KHR_materials_transmission`, `KHR_materials_ior`, `KHR_materials_clearcoat`, `KHR_materials_emissive_strength`), base-colour textures, cameras, scene hierarchy; `baseColorFactor` and `emissiveFactor` are converted from the linear space mandated by the glTF spec to sRGB at import time, matching the internal `MaterialData` convention; transmissive materials seed their transmission colour from the base colour, as glTF specifies
+- **Gaussian splat import (.sog)** — SOG v2 (Spatially Ordered Gaussians) files, either a bundled `.sog` archive or a loose `meta.json` + WebP set; decoded with libwebp and miniz (positions, smallest-three quaternions, scale/colour codebooks, optional higher-order SH palettes) into flat arrays, uploaded to the GPU, and instanced via one compacted custom-primitive BLAS per dataset with opacity-adaptive per-gaussian bounds; splats import with a default 180° Z rotation to match 3DGS capture conventions, adjustable like any node
+- **Scene graph** — full glTF node hierarchy preserved as a `Node3D` tree (`MeshNode`, `CameraNode`, `GroupNode`, `ImplicitNode`, `SplatNode`)
 - **Node transforms applied to TLAS** — mesh instances positioned using accumulated world-space transforms from the node hierarchy
 - **Live transform editing** — 3D gizmo (ImGuizmo) overlaid on the viewport for interactive Translate / Rotate / Scale in Local or World space; raw matrix fields remain available for precise values; TLAS-only rebuild keeps BLASes intact
 - **Analytic implicit shapes** — `ImplicitNode` renders Sphere, Box, or Cylinder via OptiX custom primitives (`OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES`); shapes are canonical unit forms in local space so the node's TRS transform controls size and placement; all full PBR materials (including transmission and clearcoat) apply identically to implicit shapes and mesh geometry
@@ -40,16 +44,17 @@ A physically based GPU path tracer built on NVIDIA OptiX 9.x, CUDA, Vulkan, C++1
 | Panel | Contents |
 |---|---|
 | **Viewport** | Live rendered image, resizes dynamically; left-click to select scene nodes via OptiX pick ray |
-| **Raytracer** | GPU stats, sample count, denoiser toggle, HDR output toggle, paper-white slider (active when Windows HDR is on) |
+| **Raytracer** | GPU stats, sample count, **Open glTF… / Open Splat…** buttons, denoiser toggle, HDR output toggle, paper-white slider (active when Windows HDR is on) |
 | **Environment** | Sky Mode selector (Constant / Procedural / HDRI), sky colour multiplier, rotation slider, exposure (EV) slider, Open/Clear env map buttons, and the HDRI Browser thumbnail grid |
-| **Resources** | Collapsible sub-categories (Textures expanded by default): **Materials** (per-material PBR editor with albedo swatch preview, thin-walled and shadow-catcher toggles) and **Textures** (loaded scene textures with dimensions and format) |
-| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; drag to reorder or reparent nodes; **eye icon** (right-aligned on each row) toggles node visibility — hiding a node excludes its entire subtree from the TLAS, SBT, and emissive light list; hidden nodes are dimmed in the tree; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
-| **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo |
+| **Resources** | Collapsible sub-categories (Textures expanded by default): **Materials** (per-material editor with collapsible Base / Specular / Emission / Transmission / Coat groups, albedo swatch preview, thin-walled and shadow-catcher toggles) and **Textures** (loaded scene textures with dimensions and format) |
+| **Scene Graph** | Hierarchy tree of all scene nodes with per-type **FontAwesome icons** (mesh=blue cube, camera=gold camera, implicit=green circle/square/database, splat=purple dot cloud, group=gray layer-group); click to select, right-click for **Duplicate** / **Delete**; drag to reorder or reparent nodes; **eye icon** (right-aligned on each row) toggles node visibility — hiding a node excludes its entire subtree from the TLAS, SBT, and emissive light list; hidden nodes are dimmed in the tree; **Add Implicit Shape** button creates a Sphere, Box, or Cylinder node at the world origin |
+| **Node Properties** | Gizmo operation / space selector, TRS sliders, read-only **World Transform** display (accumulated parent-to-world matrix), material editor, camera parameters for the selected node; implicit shape nodes additionally show a shape-type selector (Sphere / Box / Cylinder) and a material combo; splat nodes show gaussian count, SH bands, antialias flag, and host / GPU memory |
 | **HDRI Browser** | Async thumbnail grid for quick environment switching — select a folder (scanned recursively); **folder-grouped layout** with section headers (bare filename shown, full relative path in tooltip); **persistent disk cache** (~256 KB/entry at `{exe}/thumbnails/`, FNV-1a hash + mtime/size validation, write-then-rename for crash safety) skips the full HDR decode on warm loads; root-folder files prioritised in the load queue; thumbnails generated on 16 background threads — box-filter downsample + log-average auto-exposure → **linear RGBA16F** (no tone-mapping; highlights above 1.0 are preserved and appear above paper-white on HDR monitors); animated arc spinner while loading; size selector (Large / Medium / Small); active map highlighted; supports non-ASCII paths (ä/ö/å etc.) |
 
 ### Performance
-- **PTX hot-reload** — edit `device_programs.cu`, rebuild the PTX, and the shader reloads without restarting; accumulation resets automatically
-- **BLAS compaction** — per-mesh bottom-level AS built with size compaction
+- **PTX hot-reload** — edit `device_programs.cu` or any header under `shaders/device/`, rebuild the PTX, and the shader reloads without restarting; accumulation resets automatically
+- **BLAS compaction** — per-mesh and per-splat-dataset bottom-level AS built with size compaction
+- **Splat gather optimisations** — colours and SH are evaluated at composite time (not per BVH candidate), a full k-buffer shrinks the ray extent so traversal culls the rest, per-gaussian bounds shrink with opacity, and splat-only scenes skip the surface trace
 - **Frame-time EMA** — smoothed frame time and Mrays/s display
 
 ---
@@ -100,7 +105,7 @@ source ~/.bashrc
 # or: export OptiX_INSTALL_DIR=~/NVIDIA-OptiX-SDK-9.1.0
 ```
 
-On first run, CMake fetches GLFW, ImGui, ImGuizmo, tinygltf, Imath, OpenEXR, nativefiledialog-extended, and the **FontAwesome 6 Free Solid** font (`fa-solid-900.ttf`) from GitHub — internet access is required. The font is downloaded once into `fonts/` (gitignored) and copied next to the executable at build time.
+On first run, CMake fetches GLFW, ImGui, ImGuizmo, tinygltf, Imath, OpenEXR, libwebp, miniz, nativefiledialog-extended, and the **FontAwesome 6 Free Solid** font (`fa-solid-900.ttf`) from GitHub — internet access is required. The font is downloaded once into `fonts/` (gitignored) and copied next to the executable at build time.
 
 **Run:**
 ```bash
@@ -174,6 +179,7 @@ cmake --build build --config Release --parallel
 | **1 / 2 / 3** | Keyboard shortcut: Translate / Rotate / Scale |
 | **Local / World buttons** | Switch gizmo reference space (Node Properties panel) |
 | **Open glTF…** | Browse for `.gltf` or `.glb` scene file |
+| **Open Splat…** | Browse for a gaussian splat: a `.sog` archive or a `meta.json` from an unbundled SOG; adds a splat node to the current scene (does not clear it) |
 | **Open Env Map…** | Browse for an equirectangular environment map (`.exr` or `.hdr`) |
 | **Clear** | Remove the environment map (falls back to procedural sky) |
 | **HDRI Browser → Select Folder…** | Pick a folder; all `.exr` and `.hdr` files found recursively are shown as thumbnails |
@@ -198,10 +204,40 @@ Optix-Raytracer/
 │   └── InstallDefaultIni.cmake     Install imgui.ini next to the exe on first build
 ├── shaders/
 │   ├── device_math.h               float3 operator overloads (+ − * / for device and host)
+│   ├── color_math.h                sRGB ↔ linear transfer functions (single definition, host + device)
 │   ├── launch_params.h             GPU parameter struct shared between host and device
-│   ├── scene_data.h                MeshData and MaterialData (no STL; host + device)
-│   ├── device_programs.cu          OptiX device programs — iterative path tracer,
-│   │                               HDRI importance sampling, NEE shadow rays, MIS
+│   ├── scene_data.h                MeshData, MaterialData, SplatSetData (no STL; host + device)
+│   ├── device_programs.cu          Single OptiX translation unit (one PTX module): includes the
+│   │                               headers below in dependency order
+│   ├── device/                     Device code, one header per concern
+│   │   ├── dev_common.h            Launch-params global, tuning constants, scalar/float3 utils
+│   │   ├── path_payload.h          PathVertex payload + pointer packing
+│   │   ├── path_state.h            PathState (ray, throughput, radiance, ...) and MediumStack
+│   │   ├── rng_sampling.h          PCG RNG, cosine / VNDF / Henyey-Greenstein sampling
+│   │   ├── pbr.h                   Fresnel, GGX, Smith, PDFs
+│   │   ├── eon_diffuse.h           OpenPBR EON rough-diffuse factor
+│   │   ├── environment.h           Sky / HDRI lookup and importance sampling
+│   │   ├── emissive_lights.h       Emissive-light NEE sampling and PDFs
+│   │   ├── display.h               Tone-map / display encode
+│   │   ├── splat_gather.h          Splat k-buffer gather, SH evaluation, front-to-back composite
+│   │   ├── camera_ray.h            Primary ray: jitter + thin-lens DoF
+│   │   ├── shadow_ray.h            traceShadow(): visibility ray with thin-wall filter
+│   │   ├── path_events.h           Guide layers, background, absorption + emission
+│   │   ├── shadow_catcher.h        Shadow-catcher surface
+│   │   ├── surface_context.h       Per-vertex values shared by the lobes
+│   │   ├── coat_lobe.h             Clearcoat specular + OpenPBR coat darkening
+│   │   ├── specular_lobe.h         Specular reflection + NEE
+│   │   ├── diffuse_lobe.h          EON diffuse + NEE
+│   │   ├── transmission_lobe.h     Thin-walled / refractive transmission, volume scattering
+│   │   ├── base_lobe.h             Base material dispatch (specular / diffuse / transmission)
+│   │   ├── raygen_render.h         __raygen__renderFrame — the bounce loop
+│   │   ├── material.h              Texture sampling, MaterialData → PathVertex
+│   │   ├── hit_mesh.h              Triangle closest-hit
+│   │   ├── implicit_shapes.h       Sphere / box / cylinder intersection maths
+│   │   ├── hit_implicit.h          Implicit shape intersection, any-hit, closest-hit
+│   │   ├── splat_programs.h        Splat gather intersection + pick intersection
+│   │   ├── miss_shadow_programs.h  Miss programs and the shadow-ray any-hit filter
+│   │   └── pick_programs.h         1px pick raygen / closest-hit / miss
 │   ├── ui_scrgb.vert / .frag       Custom ImGui GLSL shaders: sRGB→linear + paper-white scale
 │   ├── ui_scrgb_spv.h              SPIR-V bytecode (generated — do not edit by hand)
 │   └── regen_ui_spv.ps1            PowerShell script to recompile the UI shaders via glslc
@@ -231,7 +267,7 @@ Optix-Raytracer/
     ├── matrix4x4.h                 Row-major Matrix4x4 with multiply, inverse, and
     │                               column-major converters for ImGuizmo interop
     ├── camera.h                    Camera struct: transform, FOV, DoF parameters
-    ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode; each node carries a cached worldTransform (maintained by Scene) and a `visible` flag (false = excluded from TLAS, SBT, and emissive lights)
+    ├── node_3d.h                   Node3D base + MeshNode, CameraNode, GroupNode (ImplicitNode / SplatNode in their own headers); each node carries a cached worldTransform (maintained by Scene) and a `visible` flag (false = excluded from TLAS, SBT, and emissive lights)
     ├── implicit_node.h             ImplicitNode (Sphere / Box / Cylinder) with shape type enum and material index
     ├── scene.h/.cpp                Scene container: meshes, materials, textures, node tree; updateWorldTransforms / updateAllWorldTransforms keep cached world matrices in sync; deleteSubtree removes a node and its descendants
     ├── mesh.h                      Host-side mesh: separate vertex attribute arrays
@@ -240,7 +276,13 @@ Optix-Raytracer/
     │                               NaN/inf pixel sanitisation at load time, GPU upload,
     │                               HDRI importance-sampling CDF; UTF-8 path support on
     │                               Windows (_wfopen / WideFileStream)
-    ├── accel.h/.cpp                OptiX acceleration structure: BLAS per mesh + TLAS
+    ├── accel.h/.cpp                OptiX acceleration structure: BLAS per mesh, shared implicit
+    │                               BLAS, per-splat-dataset BLAS (adaptive per-gaussian AABBs), TLAS
+    ├── coat_math.h                 Host-side clear-coat helper: internal diffuse reflectance K_r
+    │                               from the coat IOR (numerical Fresnel integration)
+    ├── gaussian_splat.h            GaussianSplatData (host arrays) and SplatDeviceBuffers
+    ├── sog_loader.h/.cpp           SOG v2 loader: ZIP bundle or loose meta.json + WebP images
+    ├── splat_node.h                SplatNode scene-graph node referencing a splat dataset
     ├── scene_loader.h/.cpp         glTF 2.0 loader (tinygltf); populates Scene from file
     └── CMakeLists.txt              Executable target, include paths, link libraries
 ```
@@ -286,6 +328,12 @@ Adjust the **Env Exposure** slider in the Environment panel. For scenes with emi
 
 **Scene with glass converges slowly despite HDRI**  
 HDRI NEE fires only on diffuse bounces. Paths that escape through glass (transmission) follow the BSDF and are unaffected by NEE — this is correct behaviour. Increase `MAX_BOUNCES` in `device_programs.cu` if light needs more bounces to exit the glass.
+
+**Imported splat is upside down or sideways**
+3DGS captures use a camera-style frame; splats import with a 180° Z rotation that fits most datasets. Adjust the splat node's rotation in the Node Properties panel if yours differs.
+
+**Splat rendering is slow**
+Cost scales with the number of gaussians overlapping each ray. Use a lower-density export or a smaller viewport; gaussians below 1% opacity are already skipped.
 
 **Depth of field has no visible effect**  
 Ensure f-stop is low (try f/2 or f/1.4) and that objects in the scene are at a different distance from the **Focus Distance** setting in the Node Properties camera panel.
