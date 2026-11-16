@@ -17,6 +17,17 @@ add_library(device_programs OBJECT
     device/display.h
     device/eon_diffuse.h
     device/splat_gather.h
+    device/path_state.h
+    device/shadow_ray.h
+    device/camera_ray.h
+    device/path_events.h
+    device/shadow_catcher.h
+    device/surface_context.h
+    device/coat_lobe.h
+    device/specular_lobe.h
+    device/diffuse_lobe.h
+    device/transmission_lobe.h
+    device/base_lobe.h
     device/raygen_render.h
     device/miss_shadow_programs.h
     device/material.h
@@ -38,6 +49,17 @@ source_group("Header Files\\device" FILES
     device/display.h
     device/eon_diffuse.h
     device/splat_gather.h
+    device/path_state.h
+    device/shadow_ray.h
+    device/camera_ray.h
+    device/path_events.h
+    device/shadow_catcher.h
+    device/surface_context.h
+    device/coat_lobe.h
+    device/specular_lobe.h
+    device/diffuse_lobe.h
+    device/transmission_lobe.h
+    device/base_lobe.h
     device/raygen_render.h
     device/miss_shadow_programs.h
     device/material.h
