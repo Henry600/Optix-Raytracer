@@ -35,11 +35,13 @@ struct MaterialData
     float  roughness        = 0.5f;
     int    roughnessTexture = -1;  // index into device texture array; red channel; -1 = no texture
     float  metallic         = 0.0f;
+    float  diffuseRoughness = 0.0f;  // OpenPBR base_diffuse_roughness [0, 1]: 0 = Lambertian, >0 = Oren-Nayar
 
     float3 emission         = { 1.0f, 1.0f, 1.0f };
     float  emissionScale    = 0.0f;
     int    emissionTexture  = -1;   // index into device texture array; -1 = no texture
 
+    float3 transmissionColor     = { 1.0f, 1.0f, 1.0f };  // OpenPBR transmission_color: volume absorption / thin-walled tint (sRGB-encoded)
     float  transmission          = 0.0f;  // 0 = opaque, 1 = fully transmissive
     float  ior                   = 1.5f;  // index of refraction (glass ≈ 1.5)
     float  absorptionDistance    = 1.0f;  // world-space distance for full albedo absorption

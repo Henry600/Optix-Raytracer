@@ -63,85 +63,105 @@ void Application::drawResourcesPanel()
 
                     if (matOpen)
                     {
-                        // Albedo colour + texture selector on the same line
-                        if (ImGui::ColorEdit3("Albedo", &mats[i].albedo.x, ImGuiColorEditFlags_Float))
+                        if (ImGui::TreeNodeEx("Base", ImGuiTreeNodeFlags_DefaultOpen))
                         {
-                            anyMatChanged = true;
-                        }
-
-                        ImGui::SameLine();
-                        {
-                            const auto& textures = m_scene->textures();
-                            const int   cur      = mats[i].albedoTexture;
-                            const std::string preview = (cur < 0 || cur >= (int)textures.size())
-                                ? "None"
-                                : (textures[cur].name.empty()
-                                    ? "Texture " + std::to_string(cur)
-                                    : textures[cur].name);
-
-                            ImGui::PushItemWidth(-1.0f);  // fill remaining line width
-                            if (ImGui::BeginCombo("##albedoTex", preview.c_str()))
+                            // Albedo colour + texture selector on the same line
+                            if (ImGui::ColorEdit3("Color", &mats[i].albedo.x, ImGuiColorEditFlags_Float))
                             {
-                                if (ImGui::Selectable("None", cur < 0))
-                                {
-                                    mats[i].albedoTexture = -1;
-                                    anyMatChanged = true;
-                                }
+                                anyMatChanged = true;
+                            }
 
-                                for (int t = 0; t < (int)textures.size(); ++t)
+                            ImGui::SameLine();
+                            {
+                                const auto& textures = m_scene->textures();
+                                const int   cur      = mats[i].albedoTexture;
+                                const std::string preview = (cur < 0 || cur >= (int)textures.size())
+                                    ? "None"
+                                    : (textures[cur].name.empty()
+                                        ? "Texture " + std::to_string(cur)
+                                        : textures[cur].name);
+
+                                ImGui::PushItemWidth(-1.0f);  // fill remaining line width
+                                if (ImGui::BeginCombo("##albedoTex", preview.c_str()))
                                 {
-                                    const std::string label = textures[t].name.empty()
-                                        ? ("Texture " + std::to_string(t))
-                                        : textures[t].name;
-                                    if (ImGui::Selectable(label.c_str(), cur == t))
+                                    if (ImGui::Selectable("None", cur < 0))
                                     {
-                                        mats[i].albedoTexture = t;
+                                        mats[i].albedoTexture = -1;
                                         anyMatChanged = true;
                                     }
-                                }
-                                ImGui::EndCombo();
-                            }
-                            ImGui::PopItemWidth();
-                        }
-                        if (ImGui::SliderFloat("Roughness", &mats[i].roughness, 0.0f, 1.0f))
-                        {
-                            anyMatChanged = true;
-                        }
-                        ImGui::SameLine();
-                        {
-                            const auto& textures = m_scene->textures();
-                            const int   cur      = mats[i].roughnessTexture;
-                            const std::string preview = (cur < 0 || cur >= (int)textures.size())
-                                ? "None"
-                                : (textures[cur].name.empty()
-                                    ? "Texture " + std::to_string(cur)
-                                    : textures[cur].name);
-                            ImGui::PushItemWidth(-1.0f);
-                            if (ImGui::BeginCombo("##roughnessTex", preview.c_str()))
-                            {
-                                if (ImGui::Selectable("None", cur < 0))
-                                {
-                                    mats[i].roughnessTexture = -1;
-                                    anyMatChanged = true;
-                                }
-                                for (int t = 0; t < (int)textures.size(); ++t)
-                                {
-                                    const std::string label = textures[t].name.empty()
-                                        ? ("Texture " + std::to_string(t))
-                                        : textures[t].name;
-                                    if (ImGui::Selectable(label.c_str(), cur == t))
+
+                                    for (int t = 0; t < (int)textures.size(); ++t)
                                     {
-                                        mats[i].roughnessTexture = t;
+                                        const std::string label = textures[t].name.empty()
+                                            ? ("Texture " + std::to_string(t))
+                                            : textures[t].name;
+                                        if (ImGui::Selectable(label.c_str(), cur == t))
+                                        {
+                                            mats[i].albedoTexture = t;
+                                            anyMatChanged = true;
+                                        }
+                                    }
+                                    ImGui::EndCombo();
+                                }
+                                ImGui::PopItemWidth();
+                            }
+                            if (ImGui::SliderFloat("Metalness", &mats[i].metallic,  0.0f, 1.0f))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::SliderFloat("Diffuse Roughness", &mats[i].diffuseRoughness, 0.0f, 1.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            if (ImGui::IsItemHovered())
+                            {
+                                ImGui::SetTooltip("Oren-Nayar diffuse: 0 = Lambertian, higher = flatter,\nmore retro-reflective (clay, moon-like) shading.");
+                            }
+                            ImGui::TreePop();
+                        }
+                        if (ImGui::TreeNodeEx("Specular", ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            if (ImGui::SliderFloat("Roughness", &mats[i].roughness, 0.0f, 1.0f))
+                            {
+                                anyMatChanged = true;
+                            }
+                            ImGui::SameLine();
+                            {
+                                const auto& textures = m_scene->textures();
+                                const int   cur      = mats[i].roughnessTexture;
+                                const std::string preview = (cur < 0 || cur >= (int)textures.size())
+                                    ? "None"
+                                    : (textures[cur].name.empty()
+                                        ? "Texture " + std::to_string(cur)
+                                        : textures[cur].name);
+                                ImGui::PushItemWidth(-1.0f);
+                                if (ImGui::BeginCombo("##roughnessTex", preview.c_str()))
+                                {
+                                    if (ImGui::Selectable("None", cur < 0))
+                                    {
+                                        mats[i].roughnessTexture = -1;
                                         anyMatChanged = true;
                                     }
+                                    for (int t = 0; t < (int)textures.size(); ++t)
+                                    {
+                                        const std::string label = textures[t].name.empty()
+                                            ? ("Texture " + std::to_string(t))
+                                            : textures[t].name;
+                                        if (ImGui::Selectable(label.c_str(), cur == t))
+                                        {
+                                            mats[i].roughnessTexture = t;
+                                            anyMatChanged = true;
+                                        }
+                                    }
+                                    ImGui::EndCombo();
                                 }
-                                ImGui::EndCombo();
+                                ImGui::PopItemWidth();
                             }
-                            ImGui::PopItemWidth();
-                        }
-                        if (ImGui::SliderFloat("Metallic",  &mats[i].metallic,  0.0f, 1.0f))
-                        {
-                            anyMatChanged = true;
+                            if (ImGui::SliderFloat("IOR",          &mats[i].ior,          1.0f, 3.0f, "%.3f"))
+                            {
+                                anyMatChanged = true;
+                            }
+                            ImGui::TreePop();
                         }
                         if (ImGui::TreeNode("Emission"))
                         {
@@ -189,15 +209,15 @@ void Application::drawResourcesPanel()
                         }
                         if (ImGui::TreeNode("Transmission"))
                         {
-                            if (ImGui::SliderFloat("Transmission", &mats[i].transmission, 0.0f, 1.0f, "%.3f"))
+                            if (ImGui::SliderFloat("Weight", &mats[i].transmission, 0.0f, 1.0f, "%.3f"))
                             {
                                 anyMatChanged = true;
                             }
-                            if (ImGui::SliderFloat("IOR",          &mats[i].ior,          1.0f, 3.0f, "%.3f"))
+                            if (ImGui::ColorEdit3("Color", &mats[i].transmissionColor.x, ImGuiColorEditFlags_Float))
                             {
                                 anyMatChanged = true;
                             }
-                            if (ImGui::DragFloat("Absorption Dist.", &mats[i].absorptionDistance, 0.002f, 0.0001f, 1000.0f, "%.4f"))
+                            if (ImGui::DragFloat("Depth", &mats[i].absorptionDistance, 0.002f, 0.0001f, 1000.0f, "%.4f"))
                             {
                                 anyMatChanged = true;
                             }
@@ -240,9 +260,17 @@ void Application::drawResourcesPanel()
                                     anyMatChanged = true;
                                 }
                             }
-                            if (ImGui::SliderFloat("Scatter Aniso.", &mats[i].scatteringAnisotropy, -1.0f, 1.0f, "%.3f"))
+                            if (ImGui::SliderFloat("Scatter Anisotropy", &mats[i].scatteringAnisotropy, -1.0f, 1.0f, "%.3f"))
                             {
                                 anyMatChanged = true;
+                            }
+                            ImGui::BeginDisabled();
+                            float dispersionUnused = 0.0f;
+                            ImGui::SliderFloat("Dispersion", &dispersionUnused, 0.0f, 1.0f, "%.3f");
+                            ImGui::EndDisabled();
+                            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            {
+                                ImGui::SetTooltip("Not implemented yet.");
                             }
                             ImGui::TreePop();
                         }

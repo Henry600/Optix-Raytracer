@@ -65,10 +65,12 @@ struct PathVertex
     float3 emission;     // pre-scaled emissive radiance (emission * emissionScale)
     float  roughness;    // perceptual roughness [0, 1]
     float  metallic;     // metallic factor [0, 1]
+    float  diffuseRoughness; // Oren-Nayar sigma [0, 1]; 0 = Lambertian
     float  transmission;         // 0 = opaque, 1 = fully transmissive
     float  ior;                  // index of refraction
     float  absorptionDistance;   // world-space units for full albedo absorption
     float3 scatteringCoeff;      // per-channel σ_s (1/MFP); (0,0,0) = disabled
+    float3 transmissionColor;     // transmission tint / absorption colour (linear)
     float  scatteringAnisotropy; // Henyey-Greenstein g [-1, +1]
     float  clearcoat;            // clearcoat layer intensity [0, 1]
     float  clearcoatRoughness;   // clearcoat layer roughness [0, 1]
@@ -630,6 +632,62 @@ void writeDisplay(unsigned int fbIdx, float3 linear)
         c.z = powf(c.z / (c.z + 1.0f), 1.0f / 2.2f);
     }
     optixLaunchParams.colorBuffer[fbIdx] = make_float4(c.x, c.y, c.z, 1.0f);
+}
+
+// ─── EON rough diffuse (OpenPBR base_diffuse_roughness) ──────────────────────
+// Energy-preserving Oren-Nayar (Portsmouth, Kutz & Hill, arXiv 2410.18026):
+// Fujii's Oren-Nayar (FON) single-scatter lobe plus a multiple-scattering
+// compensation lobe, with r = roughness.
+//   f_F    = ρ/π · (A + B·s/t)       A = 1/(1 + (1/2 − 2/(3π))·r),  B = r·A
+//   s = ωi·ωo − cosθi·cosθo,         1/t = (s > 0) ? 1/max(cosθi, cosθo) : 1
+//   f_ms   = ρ_ms/π · (1 − Ê(ωi))(1 − Ê(ωo)) / (1 − ⟨Ê⟩)
+//   ρ_ms   = ρ²·⟨Ê⟩ / (1 − ρ(1 − ⟨Ê⟩))
+//   Ê(μ)   = A + B·Σ g_k (1 − μ)^k   (k = 1..4, fit error < 0.1 %)
+//   ⟨Ê⟩    = A + (2/3 − 28/(15π))·B
+// Returns f·π/ρ per channel — the ratio to the Lambertian albedo weight that
+// the throughput already carries.  Cosine-weighted sampling keeps pdf = cosθ/π,
+// so the path throughput and both NEE contributions simply gain this factor.
+
+static __forceinline__ __device__
+float eonAlbedo(float mu, float A, float B)
+{
+    const float x = 1.0f - mu;
+    return A + B * x * (0.0571085289f
+                 + x * (0.491881867f
+                 + x * (-0.332181442f
+                 + x *  0.0714429953f)));
+}
+
+static __forceinline__ __device__
+float3 eonFactor(float cosI, float cosO, float dotIO, float sigma, float3 rho)
+{
+    if (sigma <= 0.0f)
+    {
+        return make_float3(1.0f, 1.0f, 1.0f);
+    }
+    const float A = 1.0f / (1.0f + (0.5f - 0.2122065908f) * sigma);   // 2/(3π) = 0.2122065908
+    const float B = sigma * A;
+
+    // Single-scatter FON lobe
+    const float s = dotIO - cosI * cosO;
+    const float t = (s > 0.0f) ? fmaxf(fmaxf(cosI, cosO), 1e-4f) : 1.0f;
+    const float single = A + B * s / t;
+
+    // Multiple-scattering compensation
+    const float avgE = A + 0.0724882125f * B;                           // 2/3 − 28/(15π)
+    const float oneMinusI = 1.0f - eonAlbedo(cosI, A, B);
+    const float oneMinusO = 1.0f - eonAlbedo(cosO, A, B);
+    const float msShape   = oneMinusI * oneMinusO / fmaxf(1.0f - avgE, 1e-4f);
+
+    // ρ_ms / ρ = ρ·⟨Ê⟩ / (1 − ρ(1 − ⟨Ê⟩)), per channel
+    const float3 msWeight = make_float3(
+        rho.x * avgE / (1.0f - rho.x * (1.0f - avgE)),
+        rho.y * avgE / (1.0f - rho.y * (1.0f - avgE)),
+        rho.z * avgE / (1.0f - rho.z * (1.0f - avgE)));
+
+    return make_float3(single + msWeight.x * msShape,
+                       single + msWeight.y * msShape,
+                       single + msWeight.z * msShape);
 }
 
 // ─── Gaussian splat volume gather ────────────────────────────────────────────
@@ -1333,8 +1391,11 @@ extern "C" __global__ void __raygen__renderFrame()
 
                 if (rnd(seed) > p_trans)
                 {
-                    // ── 2. Diffuse (Lambertian, cosine-weighted) ───────────────
+                    // ── 2. Diffuse (EON rough diffuse, cosine-weighted sampling) ──────
+                    // σ = 0 reduces to Lambertian; the roughness factor is applied
+                    // per outgoing direction (NEE below, path continuation at the end).
                     throughput *= vtx.albedo;
+                    const float3 woD = -rayDir;
 
                     float3 T, B;
                     buildONB(Nf, T, B);
@@ -1380,8 +1441,10 @@ extern "C" __global__ void __raygen__renderFrame()
                                                    * (1.0f - p_trans) * cosL * kInvPi;
                                 const float wNee   = (neePdf * neePdf)
                                                    / (neePdf * neePdf + pBsdf * pBsdf);
+                                const float3 fON   = eonFactor(cosL, cosV, devDot(neeDir, woD),
+                                                               vtx.diffuseRoughness, vtx.albedo);
                                 radiance += throughput * shadowFilter
-                                          * (cosL * kInvPi / neePdf) * neeL * wNee;
+                                          * fON * (cosL * kInvPi / neePdf) * neeL * wNee;
                             }
                         }
                     }
@@ -1429,8 +1492,10 @@ extern "C" __global__ void __raygen__renderFrame()
                                         * cosL * kInvPi;
                                     const float wNee   = (lightPdf * lightPdf)
                                         / (lightPdf * lightPdf + pBsdf * pBsdf);
+                                    const float3 fON   = eonFactor(cosL, cosV, devDot(neeDir, woD),
+                                                                   vtx.diffuseRoughness, vtx.albedo);
                                     radiance += throughput * shadowFilter
-                                              * (cosL * kInvPi / lightPdf)
+                                              * fON * (cosL * kInvPi / lightPdf)
                                               * selectedLight->emission * wNee;
                                 }
                             }
@@ -1441,6 +1506,10 @@ extern "C" __global__ void __raygen__renderFrame()
                     const float3 d = cosineSampleHemisphere(rnd(seed), rnd(seed));
                     rayDir  = devNormalize(T * d.x + B * d.y + Nf * d.z);
                     rayOrig = vtx.pos + Nf * 1e-3f;
+
+                    // EON weight for the sampled direction (pdf is unchanged).
+                    throughput *= eonFactor(devDot(rayDir, Nf), cosV, devDot(rayDir, woD),
+                                            vtx.diffuseRoughness, vtx.albedo);
 
                     // Store BSDF PDF for MIS in next-iteration miss block
                     const float kInvPi = 0.31830988618f;
@@ -1456,10 +1525,10 @@ extern "C" __global__ void __raygen__renderFrame()
                     // there is no medium interior and no Beer-Lambert absorption.
                     // Apply albedo as a flat transmission tint — consistent with how
                     // the any-hit shader filters NEE shadow rays through thin glass.
-                    // vtx.albedo is already in linear space (linearised in closest-hit).
-                    throughput.x *= vtx.albedo.x;
-                    throughput.y *= vtx.albedo.y;
-                    throughput.z *= vtx.albedo.z;
+                    // vtx.transmissionColor is already linear (linearised in applyMaterial).
+                    throughput.x *= vtx.transmissionColor.x;
+                    throughput.y *= vtx.transmissionColor.y;
+                    throughput.z *= vtx.transmissionColor.z;
                     // Nf faces the incoming ray, so -Nf steps to the far side.
                     rayOrig = vtx.pos - Nf * 1e-3f;
                     // rayDir and absorb unchanged — medium is unaffected.
@@ -1554,9 +1623,9 @@ extern "C" __global__ void __raygen__renderFrame()
                             // scatters more (Rayleigh).  The scatter event code undoes the excess
                             // σ_t beyond the actual scatter point, keeping the estimator correct.
                             const float invDist = 1.0f / vtx.absorptionDistance;
-                            medAbsorb[medTop].x = -logf(fmaxf(vtx.albedo.x, 1e-6f)) * invDist + vtx.scatteringCoeff.x;
-                            medAbsorb[medTop].y = -logf(fmaxf(vtx.albedo.y, 1e-6f)) * invDist + vtx.scatteringCoeff.y;
-                            medAbsorb[medTop].z = -logf(fmaxf(vtx.albedo.z, 1e-6f)) * invDist + vtx.scatteringCoeff.z;
+                            medAbsorb[medTop].x = -logf(fmaxf(vtx.transmissionColor.x, 1e-6f)) * invDist + vtx.scatteringCoeff.x;
+                            medAbsorb[medTop].y = -logf(fmaxf(vtx.transmissionColor.y, 1e-6f)) * invDist + vtx.scatteringCoeff.y;
+                            medAbsorb[medTop].z = -logf(fmaxf(vtx.transmissionColor.z, 1e-6f)) * invDist + vtx.scatteringCoeff.z;
                         }
                     }
                     else
@@ -1644,7 +1713,7 @@ extern "C" __global__ void __anyhit__radiance()
         && optixLaunchParams.materials[mesh.materialIndex].thinWalled)
     {
         // Accumulate this surface's linearised albedo into the colour filter.
-        const float3 alb = srgbToLinear3(optixLaunchParams.materials[mesh.materialIndex].albedo);
+        const float3 alb = srgbToLinear3(optixLaunchParams.materials[mesh.materialIndex].transmissionColor);
         optixSetPayload_1(__float_as_uint(__uint_as_float(optixGetPayload_1()) * alb.x));
         optixSetPayload_2(__float_as_uint(__uint_as_float(optixGetPayload_2()) * alb.y));
         optixSetPayload_3(__float_as_uint(__uint_as_float(optixGetPayload_3()) * alb.z));
@@ -1698,9 +1767,11 @@ void applyMaterial(PathVertex* vtx, const MaterialData& mat)
     vtx->albedo    = srgbToLinear3(mat.albedo);
     vtx->roughness = mat.roughness;
     vtx->metallic  = mat.metallic;
+    vtx->diffuseRoughness = mat.diffuseRoughness;
     vtx->emission  = srgbToLinear3(mat.emission) * mat.emissionScale;
 
     vtx->transmission         = mat.transmission;
+    vtx->transmissionColor    = srgbToLinear3(mat.transmissionColor);
     vtx->ior                  = mat.ior;
     vtx->absorptionDistance   = fmaxf(mat.absorptionDistance, 1e-4f);
     vtx->scatteringCoeff      = make_float3(fmaxf(mat.scatteringCoeff.x, 0.0f),
@@ -1986,7 +2057,7 @@ extern "C" __global__ void __anyhit__implicit()
         && optixLaunchParams.materials[shape.materialIndex].thinWalled)
     {
         const float3 alb = srgbToLinear3(
-            optixLaunchParams.materials[shape.materialIndex].albedo);
+            optixLaunchParams.materials[shape.materialIndex].transmissionColor);
         optixSetPayload_1(__float_as_uint(__uint_as_float(optixGetPayload_1()) * alb.x));
         optixSetPayload_2(__float_as_uint(__uint_as_float(optixGetPayload_2()) * alb.y));
         optixSetPayload_3(__float_as_uint(__uint_as_float(optixGetPayload_3()) * alb.z));

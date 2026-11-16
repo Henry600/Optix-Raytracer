@@ -423,6 +423,13 @@ static MaterialData buildMaterial(
             transIt->second.Get("transmissionFactor").GetNumberAsDouble());
     }
 
+    // glTF tints transmitted light with the base colour; our transmission tint
+    // is a separate parameter, so seed it from the (already sRGB-encoded) albedo.
+    if (mat.transmission > 0.0f)
+    {
+        mat.transmissionColor = mat.albedo;
+    }
+
     // KHR_materials_ior — index of refraction (default 1.5 per spec)
     auto iorIt = gltfMat.extensions.find("KHR_materials_ior");
     if (iorIt != gltfMat.extensions.end() && iorIt->second.Has("ior"))
