@@ -6,6 +6,7 @@
 add_library(device_programs OBJECT
     device_programs.cu
     device_math.h
+    color_math.h
     launch_params.h
     scene_data.h
     device/dev_common.h
@@ -38,7 +39,7 @@ add_library(device_programs OBJECT
     device/pick_programs.h
 )
 
-source_group("Header Files" FILES device_math.h launch_params.h scene_data.h)
+source_group("Header Files" FILES device_math.h color_math.h launch_params.h scene_data.h)
 source_group("Header Files\\device" FILES
     device/dev_common.h
     device/path_payload.h

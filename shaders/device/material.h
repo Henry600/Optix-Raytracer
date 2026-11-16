@@ -37,20 +37,22 @@ bool sampleSceneTex(int index, const float2* uvs, const uint3& tri,
 // ─── Material → path vertex ──────────────────────────────────────────────────
 // Single place where MaterialData is copied into the PathVertex payload, shared
 // by every closest-hit program.  A new material field needs adding here only.
-// Colours are linearised; textured lookups (albedo / roughness / emission) are
-// layered on top by the caller (see __closesthit__radiance).
+// The device MaterialData array already holds linear colours (linearised once at
+// upload, see Application::uploadMaterials), so no pow() runs per hit.  Textured
+// lookups (albedo / roughness / emission) are layered on top by the caller
+// (see __closesthit__radiance).
 
 static __forceinline__ __device__
 void applyMaterial(PathVertex* vtx, const MaterialData& mat)
 {
-    vtx->albedo    = srgbToLinear3(mat.albedo);
+    vtx->albedo    = mat.albedo;
     vtx->roughness = mat.roughness;
     vtx->metallic  = mat.metallic;
     vtx->diffuseRoughness = mat.diffuseRoughness;
-    vtx->emission  = srgbToLinear3(mat.emission) * mat.emissionScale;
+    vtx->emission  = mat.emission * mat.emissionScale;
 
     vtx->transmission         = mat.transmission;
-    vtx->transmissionColor    = srgbToLinear3(mat.transmissionColor);
+    vtx->transmissionColor    = mat.transmissionColor;
     vtx->ior                  = mat.ior;
     vtx->absorptionDistance   = fmaxf(mat.absorptionDistance, 1e-4f);
     vtx->scatteringCoeff      = make_float3(fmaxf(mat.scatteringCoeff.x, 0.0f),
@@ -61,7 +63,7 @@ void applyMaterial(PathVertex* vtx, const MaterialData& mat)
     vtx->clearcoat          = mat.clearcoat;
     vtx->clearcoatRoughness = mat.clearcoatRoughness;
     vtx->clearcoatDarkening = mat.clearcoatDarkening;
-    vtx->clearcoatColor     = srgbToLinear3(mat.clearcoatColor);
+    vtx->clearcoatColor     = mat.clearcoatColor;
     vtx->clearcoatIor       = mat.clearcoatIor;
     vtx->clearcoatKr        = mat.clearcoatKr;
 

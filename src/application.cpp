@@ -5,6 +5,7 @@
 
 #include "application.h"
 #include "coat_math.h"
+#include "color_math.h"
 #include "implicit_node.h"
 #include "matrix4x4.h"
 
@@ -333,12 +334,19 @@ void Application::uploadMaterials()
         m_materialsBuffer.alloc(matBytes);
     }
 
-    // Derived per-material coat data (internal reflectance depends only on the
-    // coat IOR) is filled on an upload copy so the UI-edited values stay pristine.
+    // The device copy differs from the UI-edited host data in two ways, both
+    // computed once here instead of per hit in the shaders:
+    //   - colours (albedo, emission, transmission, coat) are linearised — the host
+    //     MaterialData keeps them sRGB-encoded for the colour pickers;
+    //   - the coat's internal reflectance, which depends only on the coat IOR.
     std::vector<MaterialData> upload = mats;
     for (MaterialData& m : upload)
     {
-        m.clearcoatKr = coatInternalReflectance(m.clearcoatIor);
+        m.albedo            = srgbToLinear3(m.albedo);
+        m.emission          = srgbToLinear3(m.emission);
+        m.transmissionColor = srgbToLinear3(m.transmissionColor);
+        m.clearcoatColor    = srgbToLinear3(m.clearcoatColor);
+        m.clearcoatKr       = coatInternalReflectance(m.clearcoatIor);
     }
     m_materialsBuffer.upload(upload.data(), matBytes);
 }

@@ -3,6 +3,7 @@
 
 #include <optix.h>
 #include "device_math.h"   // float3 operators (+, -, *, /, unary -)
+#include "color_math.h"    // srgbToLinear / srgbToLinear3 (shared with the host)
 #include "launch_params.h"
 #include "scene_data.h"
 
@@ -17,19 +18,6 @@ static constexpr int MAX_BOUNCES = 16;
 static __forceinline__ __device__ float devClamp01(float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); }
 static __forceinline__ __device__ float devDot(float3 a, float3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 static __forceinline__ __device__ float devLuminance(float3 c) { return 0.2126f*c.x + 0.7152f*c.y + 0.0722f*c.z; }
-
-// sRGB → linear: simple γ-2.2 approximation, matching the linear→sRGB encode path.
-static __forceinline__ __device__
-float srgbToLinear(float c)
-{
-    return powf(devClamp01(c), 2.2f);
-}
-
-static __forceinline__ __device__
-float3 srgbToLinear3(float3 c)
-{
-    return make_float3(srgbToLinear(c.x), srgbToLinear(c.y), srgbToLinear(c.z));
-}
 
 static __forceinline__ __device__
 float3 devNormalize(float3 v)

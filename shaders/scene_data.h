@@ -21,6 +21,10 @@ struct MeshData
     int           materialIndex;  // into the per-launch MaterialData array
 };
 
+// NOTE: colour fields (albedo, emission, transmissionColor, clearcoatColor) are
+// sRGB-encoded on the host (colour pickers, glTF import) but LINEAR in the device
+// copy — Application::uploadMaterials converts once at upload.
+//
 // Flat POD material — used on the host side and copied directly into SBT records
 // or a device-side MaterialData array. No std::string; names live in Scene on the host.
 struct MaterialData

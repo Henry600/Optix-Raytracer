@@ -41,8 +41,8 @@ extern "C" __global__ void __anyhit__radiance()
         && optixLaunchParams.materials
         && optixLaunchParams.materials[mesh.materialIndex].thinWalled)
     {
-        // Accumulate this surface's linearised albedo into the colour filter.
-        const float3 alb = srgbToLinear3(optixLaunchParams.materials[mesh.materialIndex].transmissionColor);
+        // Accumulate this surface's (linear) transmission colour into the colour filter.
+        const float3 alb = optixLaunchParams.materials[mesh.materialIndex].transmissionColor;
         optixSetPayload_1(__float_as_uint(__uint_as_float(optixGetPayload_1()) * alb.x));
         optixSetPayload_2(__float_as_uint(__uint_as_float(optixGetPayload_2()) * alb.y));
         optixSetPayload_3(__float_as_uint(__uint_as_float(optixGetPayload_3()) * alb.z));

@@ -7,6 +7,7 @@
 #include <tiny_gltf.h>
 
 #include "scene_loader.h"
+#include "color_math.h"
 #include "node_3d.h"
 
 #include <algorithm>
@@ -352,14 +353,9 @@ static void loadImage(const tinygltf::Image& gltfImage, Scene& outScene)
 // glTF stores baseColorFactor and emissiveFactor in linear space (per spec).
 // Our MaterialData convention is sRGB-encoded values: the shader always calls
 // srgbToLinear3() on mat.albedo/mat.emission before shading, and ImGui's
-// ColorEdit3 treats them as sRGB.  Convert at import time so the round-trip
-// linearise → shade is correct and the UI shows the right perceived colour.
-static float linearToSrgb(float c)
-{
-    c = std::max(0.0f, std::min(1.0f, c));
-    return powf(c, 1.0f / 2.2f);  // matches srgbToLinear(x)=pow(x,2.2) in shader
-}
-
+// ColorEdit3 treats them as sRGB.  Convert at import time (linearToSrgb from
+// color_math.h) so the round-trip linearise → shade is correct and the UI shows
+// the right perceived colour.
 static MaterialData buildMaterial(
     const tinygltf::Material& gltfMat,
     const tinygltf::Model&    model,
